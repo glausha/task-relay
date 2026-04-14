@@ -1,17 +1,40 @@
 # task-relay 詳細設計 v1.0
 
-本書は `basic-design-v2.0.md` (基本設計) と対になる詳細設計文書である。抽象的な原則・契約・責務境界は基本設計を参照し、本書は具体的な列定義、閾値、アルゴリズム、実装手順、IPC 経路、運用規則を扱う。
+本書は `basic-design-v1.0.md` (基本設計) と対になる詳細設計文書である。抽象的な原則・契約・責務境界は基本設計を参照し、本書は具体的な列定義、閾値、アルゴリズム、実装手順、IPC 経路、運用規則を扱う。
 
 基本設計との関係:
 
 - 基本設計: アーキテクチャ、不変条件、責務境界、契約、状態モデル骨格、非機能要件
 - 詳細設計: SQLite schema、Router transaction 手順、状態機械の Trigger/Guard 表、retry 閾値、Circuit Breaker 閾値、Projection 冪等性アルゴリズム、Cold Start 手順、redact allowlist
 
+参照ビューとの関係:
+
+- `docs/reference/schema.md`, `docs/reference/state-machine.md`, `docs/reference/reconcile.md`, `docs/reference/disaster-recovery.md` は、本書の該当章を人間が引きやすい形へ切り出した参照ビューである。
+- 実装仕様の source of truth は本書であり、参照ビューと矛盾した場合は本書が勝つ。
+- 参照ビューは本書の置き換えではなく、要点整理と運用参照のためにだけ存在する。
+
+## 0. ペルソナ・トレーサビリティ
+
+本書の各詳細規則は [personas.md](personas.md) の要求を実装可能な形へ落としている。
+設計判断を含む `##` / `###` 節には `主要受益ペルソナ` を必須で注記し、レビュー時に「この閾値や手順は誰のためにあるか」を辿れるようにする。
+例外は `関連ドキュメント`, 純粋な補助列挙, file path や enum のみを示す参照補助節だけとする。
+
+対応原則:
+
+- P1: モバイル中心でも安全に投入・把握・最小介入できること
+- P2: 深夜でも局所障害と全体障害を誤読せず、止める・待つ・再開するを選べること
+- P3: 後から状態遷移、再送、介入理由を説明できること
+- P4: upgrade、restore、retention を runbook どおり反復できること
+
 ---
 
 ## 1. 書き込み順序
 
+主要受益ペルソナ: P3, P4
+
 ### 1.1 Ingress
+
+主要受益ペルソナ: P1, P3
 
 ```
 署名検証 -> ingress_journal append+fsync -> ACK/defer -> SQLite inbox ingest
@@ -19,17 +42,23 @@
 
 ### 1.2 業務状態遷移
 
+主要受益ペルソナ: P3
+
 ```
 SQLite transaction (outbox INSERT + inbox.processed_at 更新 + state 更新) -> commit
 ```
 
 ### 1.3 外部反映
 
+主要受益ペルソナ: P3
+
 ```
 projection_outbox -> Forgejo / Discord
 ```
 
 ### 1.4 SQLite 破損・満杯時の具体手順
+
+主要受益ペルソナ: P2, P4
 
 - 新規受理を停止し Discord に `system_degraded` を通知する。
 - Router / worker は drain せず停止する。
@@ -42,7 +71,11 @@ projection_outbox -> Forgejo / Discord
 
 ## 2. データモデル詳細
 
+主要受益ペルソナ: P3, P4
+
 ### 2.1 主テーブル定義
+
+主要受益ペルソナ: P3, P4
 
 #### `tasks`
 
@@ -132,8 +165,11 @@ projection_outbox -> Forgejo / Discord
 #### `system_events`
 
 - `task_id`, `event_type`, `severity`, `payload_json`, `created_at`
+- 代表的な `event_type` には `mirror_readonly_violation_detected`, `retention_orphan_detected` を含む。
 
 ### 2.2 補助ファイル
+
+主要受益ペルソナ: P3, P4
 
 - `var/task-relay/journal/YYYYMMDD.ndjson.zst`
 - `var/task-relay/logs/<task_id>/<stage>/<started_at>_<call_id>.jsonl.zst`
@@ -146,7 +182,11 @@ projection_outbox -> Forgejo / Discord
 
 ## 3. Ingress 詳細
 
+主要受益ペルソナ: P1, P2
+
 ### 3.1 Forgejo Webhook
+
+主要受益ペルソナ: P1, P3
 
 受理順序:
 
@@ -159,9 +199,12 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 - `reviewing -> done` 判定に `pull_request` Webhook は使わない。
 - issue body frontmatter の人間編集は真実にしない。差分検知時は `system comment` で「mirror は読み取り専用」と通知する。
 - frontmatter diff 検知は `task_snapshot` projection worker が issue body 更新時に観測目的で行う。Router の状態判定には使わない。
+- frontmatter diff を検知した projection worker は、`system_events` に `event_type=mirror_readonly_violation_detected`, `severity=warning` を append する。`payload_json` には少なくとも `issue_id`, `changed_fields`, `observed_remote_updated_at` を含める。
 - allowlist label の追加イベントと削除イベントはどちらも受理する。label desired set は SQLite 真実から再計算する。
 
 ### 3.2 Discord Gateway
+
+主要受益ペルソナ: P1, P2
 
 実装パラメタ:
 
@@ -181,7 +224,20 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
   - 1500ms 超過: `Task relay did not confirm durable acceptance in time. request_id=<request_id>`
 - Discord client 側自動リトライは行わない。再送は人間が明示的に再実行する。
 
+`/status` query:
+
+- `/status` は read-only query であり、task truth を変更しないため journal append を行わない。
+- source of truth は SQLite truth と breaker state 観測値である。
+- 最低限の出力 schema:
+  - `scope_label`: `進行中` / `人間待ち` / `局所保留` / `局所障害` / `局所停止` / `全体障害` / `全体保護中` / `完了`
+  - `summary_counts`: `in_progress`, `waiting_human`, `local_attention`, `global_degraded`, `global_protected`
+  - `top_tasks[]`: `task_id`, `state`, `scope_label`, `next_action`, `url`
+  - `system_message`: 全体影響がある場合の短い説明
+- `/status` は少なくとも `局所障害`, `全体障害`, `全体保護中` を区別して表示しなければならない。
+
 ### 3.3 runner-cli
+
+主要受益ペルソナ: P1, P2, P4
 
 - すべての管理操作は `cli` source event として journal → inbox を通す。直接 DB を書き換えない。
 
@@ -189,7 +245,11 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 
 ## 4. Inbox / Router 処理詳細
 
+主要受益ペルソナ: P2, P3
+
 ### 4.1 Inbox 処理 transaction
+
+主要受益ペルソナ: P3
 
 手順:
 
@@ -210,6 +270,8 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 - 初回 `projection_outbox.next_attempt_at` は `event_inbox.received_at + initial_retry_delay` で計算する。
 
 ### 4.2 冪等性
+
+主要受益ペルソナ: P3
 
 - 受理段階: unique(`source`, `delivery_id`)。
 - Router 段階: `state_rev` と現在 state を見て無効遷移を no-op にする。
@@ -235,6 +297,8 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 - snapshot の状態順序判定に Forgejo mirror を使ってはならない。
 
 ### 4.3 状態機械
+
+主要受益ペルソナ: P2, P3
 
 #### 4.3.1 正常系遷移
 
@@ -290,6 +354,8 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 
 ### 4.4 `/critical` 規則
 
+主要受益ペルソナ: P1, P2
+
 | 現状態 | `/critical on` の結果 |
 |---|---|
 | `new`, `planning`, `plan_pending_approval` | `critical=true` に設定。以後 auto approve 無効 |
@@ -306,6 +372,8 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 
 ### 4.5 Internal Event Types
 
+主要受益ペルソナ: P2, P3
+
 主要な internal event_type:
 
 - `internal.executor_finished`
@@ -321,7 +389,11 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 
 ## 5. Branch Lease 実装
 
+主要受益ペルソナ: P1, P2
+
 ### 5.1 取得
+
+主要受益ペルソナ: P1, P2, P3
 
 - 待機列の真実は SQLite `branch_waiters`。
 - `queue_order` 最小の task のみ lease 取得を試みる。
@@ -332,6 +404,8 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 
 ### 5.2 heartbeat / renew
 
+主要受益ペルソナ: P1, P2
+
 - ToolRunner 親プロセスが subprocess を起動する。
 - 親は別 asyncio task で 10 秒ごとに compare-and-renew を実行する。
 - subprocess は Redis に対して lease key の read-only assert だけを行ってよい。
@@ -339,6 +413,8 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 - subprocess 終了時に renew task も停止する。
 
 ### 5.3 実行中の強制検査
+
+主要受益ペルソナ: P1, P2, P3
 
 - 各 Git mutate 前に `assert_lease_readonly(branch, task_id, fencing_token)` を呼ぶ。
 - token 不一致または lease 欠落時は mutate を開始してはならない。
@@ -351,6 +427,8 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 
 ### 5.4 解放
 
+主要受益ペルソナ: P2, P4
+
 - 正常終了時に compare-and-delete。
 - `cancelled`, `done`, `human_review_required` は wait queue から除去する。
 - `system_degraded` は短期復帰前提のため直ちには wait queue から除去しない。
@@ -359,6 +437,8 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 - queue 先頭更新後、Router が次 task を dispatch する。
 
 ### 5.5 `/unlock`
+
+主要受益ペルソナ: P2
 
 - `/unlock <branch>` は admin only の強制 lease 解放操作である。
 - 実装は `internal.unlock_requested` event として journal に append する。
@@ -370,7 +450,11 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 
 ## 6. Agent adapter 契約詳細
 
+主要受益ペルソナ: P1, P3
+
 ### 6.1 Planner 出力
+
+主要受益ペルソナ: P1, P3
 
 - `goal`
 - `sub_tasks[]`
@@ -388,6 +472,8 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 - formatter により発生する repo policy 上のファイル
 
 ### 6.2 Plan Validator
+
+主要受益ペルソナ: P1, P3
 
 自動承認条件:
 
@@ -423,6 +509,8 @@ Planner / Reviewer adapter metadata:
 
 ### 6.3 Execution 境界検査
 
+主要受益ペルソナ: P1, P2, P3
+
 開始前:
 
 - branch lease 保有確認
@@ -445,6 +533,8 @@ glob 展開規則:
 - path 正規化後に repo root 外へ出るものは即 reject する
 
 ### 6.4 Reviewer 出力
+
+主要受益ペルソナ: P3
 
 Reviewer は acceptance criterion ごとに以下を返す:
 
@@ -478,7 +568,11 @@ Reviewer は acceptance criterion ごとに以下を返す:
 
 ## 7. ToolRunner とログ保持
 
+主要受益ペルソナ: P2, P3, P4
+
 ### 7.1 ToolRunner
+
+主要受益ペルソナ: P2, P3
 
 - 親プロセスが subprocess を起動する。
 - 親の責務: heartbeat renew task、stdout/stderr stream 受信、timeout 監視、kill / cleanup。
@@ -486,6 +580,8 @@ Reviewer は acceptance criterion ごとに以下を返す:
 - publish が失敗しても truth は SQLite にあり、親プロセス polling fallback が最終検知経路になる。
 
 ### 7.2 ログ保持と retention worker
+
+主要受益ペルソナ: P3, P4
 
 - 生イベントは `logs/<task_id>/<stage>/<started_at>_<call_id>.jsonl.zst` に追記する。
 - SQLite `tool_calls` には `log_path`, `log_sha256`, `log_bytes` だけ保存する。
@@ -502,11 +598,13 @@ retention worker の責務:
 - 180 日超の `tool_calls` metadata を削除する。
 - journal retention は別 worker で実施し、30 日超ファイルを rotate 済みディレクトリから削除する。
 - retention worker の初回実行時と起動時 sweep で、`tool_calls` と実体 file の整合を確認する。
-- `log_path` が null で実体 file が残っていれば orphan file として削除する。
-- `log_path` が非 null で実体 file が無ければ metadata stale として null 化する。
+- `log_path` が null で実体 file が残っていれば orphan file として削除し、`system_events` に `event_type=retention_orphan_detected`, `severity=warning` を append する。`payload_json` には少なくとも `orphan_kind=file`, `path`, `detected_by=retention_sweep` を含める。
+- `log_path` が非 null で実体 file が無ければ metadata stale として null 化し、`system_events` に `event_type=retention_orphan_detected`, `severity=warning` を append する。`payload_json` には少なくとも `orphan_kind=metadata`, `call_id`, `path`, `detected_by=retention_sweep` を含める。
 - router 稼働中に retention を実行してよい。grace 120 秒と保持 30 日の差が大きく、runbook 上の drain 条件は不要とする。
 
 ### 7.3 failure_code enum
+
+主要受益ペルソナ: P2, P3
 
 - `auth_error`
 - `permission_error`
@@ -524,7 +622,11 @@ retention worker の責務:
 
 ## 8. Failure Classification / Retry / Breaker
 
+主要受益ペルソナ: P2
+
 ### 8.1 分類規則
+
+主要受益ペルソナ: P2, P3
 
 | failure_code | class | 自動再試行 |
 |---|---|---|
@@ -552,11 +654,15 @@ idempotency 規則:
 
 ### 8.2 repair retry
 
+主要受益ペルソナ: P2
+
 - `invalid_plan_output` 再試行時は system prompt に以下を追加:
   - `前回出力は JSON 契約を満たしていない。意味内容を保ったまま有効な JSON のみを返せ`
 - 3 回連続で壊れた場合に初めて `human_review_required`。
 
 ### 8.3 Circuit Breaker
+
+主要受益ペルソナ: P2
 
 - breaker 集計キーは `failure_code` 単位の global 集計。
 - 同一 `failure_code` の FATAL が 10 分以内に 3 件で open。
@@ -573,7 +679,11 @@ idempotency 規則:
 
 ## 9. Projection 実装詳細
 
+主要受益ペルソナ: P3
+
 ### 9.1 stream の種類と payload
+
+主要受益ペルソナ: P3
 
 - `task_snapshot`
   - 現在 state, state_rev, plan_rev, critical, URLs
@@ -595,6 +705,8 @@ idempotency 規則:
 
 ### 9.2 順序規則
 
+主要受益ペルソナ: P3
+
 - worker は `(task_id, stream, target)` ごとに `outbox_id` 昇順で処理する。
 - `(task_id, stream, target)` について同時に 1 worker しか in-flight を持ってはならない。
 - claim は SQLite transaction で最古の未送信行に `claimed_by`, `claimed_at` を設定して行う。
@@ -612,6 +724,8 @@ idempotency 規則:
 
 ### 9.3 retry policy
 
+主要受益ペルソナ: P2, P3
+
 - 初回 1 分。
 - 以後指数バックオフ、上限 1 時間。
 - 停止条件は OR:
@@ -625,6 +739,8 @@ idempotency 規則:
 
 ### 9.4 projection rebuild
 
+主要受益ペルソナ: P3, P4
+
 - `runner-cli projection-rebuild --task <task_id>`
 - 目的は DB 欠損後の outbox 補完であり、既送信 remote mirror の強制再生成ではない。
 - デフォルト実装は `INSERT ... ON CONFLICT DO NOTHING` とし、欠損行だけを補う。
@@ -637,12 +753,18 @@ idempotency 規則:
 
 ## 10. レート制御
 
+主要受益ペルソナ: P1
+
 ### 10.1 API 系
+
+主要受益ペルソナ: P1
 
 - 応答ヘッダに `remaining`, `reset_at` があればそれを真とする。
 - SQLite 更新成功後に Redis cache を更新する。
 
 ### 10.2 Subscription CLI 系
+
+主要受益ペルソナ: P1
 
 ヘッダが無い場合の規則:
 
@@ -657,6 +779,8 @@ idempotency 規則:
 
 ### 10.3 受付停止
 
+主要受益ペルソナ: P1, P2
+
 `limit = 0` は「未観測」を意味し、停止判定に使ってはならない。
 
 ```python
@@ -664,11 +788,20 @@ if limit > 0 and remaining < limit * 0.2:
     stop_new_tasks = True
 ```
 
+補足:
+
+- v1.0 で確定するのは内部保護としての受付停止規則までであり、P1 向けの cost / rate 可視化や通知は本書の正本範囲外とする。
+- `tool_calls.tokens_in`, `tokens_out` は将来の使用量集計の素材であり、v1.0 では集計 window、alert threshold、通知頻度を確定しない。
+
 ---
 
 ## 11. Cold Start / Reconcile
 
+主要受益ペルソナ: P2, P4
+
 ### 11.1 起動順
+
+主要受益ペルソナ: P2, P4
 
 ```
 1. redis.service
@@ -691,6 +824,8 @@ ingester 再開位置は `journal_ingester_state(last_file, last_offset)` を一
 
 ### 11.2 `implementing` の再開規則
 
+主要受益ペルソナ: P2, P4
+
 起動時に `implementing` task を一律人間送りにはしない。
 
 | 条件 | 処理 |
@@ -709,6 +844,8 @@ ingester 再開位置は `journal_ingester_state(last_file, last_offset)` を一
 
 ### 11.3 可視化
 
+主要受益ペルソナ: P2, P3
+
 - `runner-cli reconcile-report --last`
 - `/status` でも直近 reconcile の件数を表示
 
@@ -716,7 +853,11 @@ ingester 再開位置は `journal_ingester_state(last_file, last_offset)` を一
 
 ## 12. 認証・権限詳細
 
+主要受益ペルソナ: P1, P2, P4
+
 ### 12.1 Secret redact allowlist
+
+主要受益ペルソナ: P2, P4
 
 適用範囲: log / stderr / trace / system comment など観測用出力。`event_inbox.payload_json` / `projection_outbox.payload_json` は真実源として保持する。
 
@@ -744,6 +885,8 @@ ingester 再開位置は `journal_ingester_state(last_file, last_offset)` を一
 
 ### 12.2 管理コマンド matrix
 
+主要受益ペルソナ: P1, P2, P4
+
 | コマンド | 権限 |
 |---|---|
 | `/approve` | `task.requested_by` または `admin_user_ids` |
@@ -757,13 +900,19 @@ ingester 再開位置は `journal_ingester_state(last_file, last_offset)` を一
 
 ## 13. Backup / DR / SQLite 運用
 
+主要受益ペルソナ: P4
+
 ### 13.1 方式
+
+主要受益ペルソナ: P4
 
 - Litestream continuous replication to S3-compatible storage
 - 日次 SQLite snapshot を別物理ディスクへ
 - journal は 30 日保持、7 日はローカル + オフサイト二重化
 
 ### 13.2 成功判定
+
+主要受益ペルソナ: P4
 
 - `replication_lag_seconds <= 60`
 - 前回 restore drill 成功
@@ -774,11 +923,15 @@ restore drill 頻度: 四半期ごとに 1 回以上。
 
 ### 13.3 WAL / VACUUM
 
+主要受益ペルソナ: P4
+
 - WAL auto-checkpoint: 256 MiB 超で実施
 - 週次 `wal_checkpoint(TRUNCATE)`
 - 月次 `VACUUM`
 
 ### 13.4 Restore 手順
+
+主要受益ペルソナ: P4
 
 1. 最新 Litestream replica から復元する。
 2. 復元済み SQLite の `journal_ingester_state` を開始点とし、無い場合は `max(event_inbox.journal_offset)` を開始点として journal replay する。
@@ -792,7 +945,10 @@ restore drill 頻度: 四半期ごとに 1 回以上。
 
 ## 14. モバイル UX
 
+主要受益ペルソナ: P1, P2
+
 - Discord は task 投入と簡易確認のみ。
+- `/status` を P2 の主運用ビューとし、少なくとも `局所障害`, `全体障害`, `全体保護中(dispatch pause)` の scope ラベルを返す。
 - 詳細は Tailscale 越し Forgejo Web。
 - Discord に出す情報: task ID / 状態 / 件数 / Forgejo URL。
 - 出してはいけない情報: plan 本文 / diff / log 詳細 / secret / cost 明細。
@@ -801,11 +957,11 @@ restore drill 頻度: 四半期ごとに 1 回以上。
 
 ## 15. 関連ドキュメント
 
-- `basic-design-v2.0.md` (本書と対になる基本設計)
-- `docs/schema.md`
-- `docs/state-machine.md`
-- `docs/runbook.md`
-- `docs/disaster-recovery.md`
-- `docs/reconcile.md`
-- `docs/failure-injection.md`
+- `basic-design-v1.0.md` (本書と対になる基本設計)
+- `docs/reference/schema.md`
+- `docs/reference/state-machine.md`
+- `docs/reference/runbook.md`
+- `docs/reference/disaster-recovery.md`
+- `docs/reference/reconcile.md`
+- `docs/reference/failure-injection.md`
 - `.versions.yaml`

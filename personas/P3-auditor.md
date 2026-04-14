@@ -23,29 +23,39 @@
 - AI 実行・人間承認・投影結果が分離して記録される。
 - 真実源と mirror の役割差が明確である。
 
+## 設計含意
+
+- task truth と operational metadata を混ぜない。
+- outbox / inbox / tool log / system event の責務を分離する。
+- 監査コメントと current snapshot を分ける。
+- 真実源を明示し、mirror を真実源として参照しない。
+
+## 行動特性
+
+- 時系列を辿って因果を再構成する。
+- ひとつの表示面だけで結論を出さず、truth と mirror を切り分けて読む。
+- 例外ケースや再送も「なぜそうなったか」を説明できるまで掘る。
+- 属人的メモではなく、再現可能な手順と記録を好む。
+
 ## 成功
 
-- state 遷移を時系列で漏れなく追える。
-- AI 実行 / 人間承認 / 投影結果が分離記録されている。
-- projection 再送や rebuild の事実が説明可能である。
+- 後日見返しても、task ごとの状態遷移が一貫して追える。
+- AI 実行、人間承認、外部反映が混ざらず説明できる。
+- 「何が真実で、何が mirror か」を迷わず区別できる。
+- 再送や rebuild が起きても、それを履歴として説明できる。
 
 ## 失敗
 
-- state / projection / tool log が混在していて解読不能。
-- mirror を真実と誤認した記録。
-- 再送や rebuild の事実がログから消えている。
+- 状態、監査コメント、投影結果が混ざっていて因果が追えない。
+- 真実源と mirror のどちらを信じるべきかが曖昧になる。
+- 障害後に「何が起きたか」を再構成できない。
+- 後から見たとき、人間の介入理由が読み取れない。
 
 ## 代表 utterance
 
 - 「なんでこの task は `human_review_required` になったんだっけ?」
 - 「この comment はいつ誰がつけた?」
 - 「先月の `system_degraded` は何が root cause だった?」
-
-## 設計含意
-
-- task truth と operational metadata を混ぜない。
-- 監査コメントと current snapshot を分ける。
-- 真実源を明示し、mirror を真実源として参照しない。
 
 ## 関連シナリオ
 
