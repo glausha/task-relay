@@ -27,6 +27,7 @@ def comment_key(task_id: str, target: str, origin_event_id: str, comment_kind: s
 
 
 def label_sync_key(task_id: str, target: str, state_rev: int, desired_labels: Iterable[str]) -> str:
+    # WHY: idempotency is keyed only by the managed allowlist subset, not manual Forgejo labels.
     return _digest([task_id, "task_label_sync", target, str(state_rev), ",".join(sorted(desired_labels))])
 
 
