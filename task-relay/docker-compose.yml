@@ -1,0 +1,21 @@
+# Phase 1 で config を詰める。現状はサービス骨格のみ。
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  litestream:
+    image: litestream/litestream:latest
+    command: ["replicate"]
+    volumes:
+      - ./var/task-relay:/var/task-relay:ro
+      # - ./litestream.yml:/etc/litestream.yml:ro
+    restart: unless-stopped
+
+volumes:
+  redis-data:
