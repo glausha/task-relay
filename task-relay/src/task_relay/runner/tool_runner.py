@@ -9,11 +9,29 @@ from task_relay.clock import Clock, SystemClock
 from task_relay.config import Settings
 from task_relay.ids import new_event_id
 from task_relay.journal.writer import JournalWriter
-from task_relay.runner.adapters.base import AdapterOutput
-from task_relay.types import CanonicalEvent, JournalPosition, Plan, Source, TaskState
+from task_relay.runner.adapters.base import AdapterOutput, TimeoutDecision
+from task_relay.types import AdapterContract, CanonicalEvent, JournalPosition, Plan, Source, Stage, TaskState
 
 
 SIGTERM_GRACE_SECONDS = 15
+
+
+def decide_timeout_retry(
+    *,
+    stage: Stage,
+    contract: AdapterContract,
+    attempt_count: int,
+) -> TimeoutDecision:
+    """
+    detailed-design §8.1 timeout / oom_killed classification.
+    """
+    if stage == Stage.EXECUTING:
+        return TimeoutDecision.GIVE_UP_HR
+    if not contract.supports_request_id:
+        return TimeoutDecision.GIVE_UP_HR
+    if attempt_count >= 1:
+        return TimeoutDecision.GIVE_UP_HR
+    return TimeoutDecision.RETRY
 
 
 class ToolRunner:

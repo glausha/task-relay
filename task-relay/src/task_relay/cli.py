@@ -5,9 +5,11 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any
+from collections.abc import Callable
 
 import click
 
+from .breaker.circuit_breaker import CircuitBreaker
 from .config import Settings
 from .db import queries
 from .db.connection import connect
@@ -36,6 +38,19 @@ def _open_conn(settings: Settings) -> sqlite3.Connection:
 def _open_writer(settings: Settings) -> JournalWriter:
     settings.journal_dir.mkdir(parents=True, exist_ok=True)
     return JournalWriter(settings.journal_dir)
+
+
+def _warm_circuit_breaker(
+    conn: sqlite3.Connection,
+    *,
+    conn_factory: Callable[[], sqlite3.Connection] | None = None,
+) -> CircuitBreaker:
+    breaker = CircuitBreaker(conn_factory=conn_factory)
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'system_events'").fetchone() is None:
+        return breaker
+    # WHY: restart must not implicitly clear breaker history inside the active window.
+    breaker.rebuild_from_events(conn)
+    return breaker
 
 
 def _append_cli_command(
@@ -155,6 +170,12 @@ def ingester(settings: Settings, once: bool, interval: float) -> None:
     def conn_factory() -> sqlite3.Connection:
         return _open_conn(settings)
 
+    warm_conn = conn_factory()
+    try:
+        _warm_circuit_breaker(warm_conn, conn_factory=conn_factory)
+    finally:
+        warm_conn.close()
+
     reader = JournalReader(settings.journal_dir)
     ing = JournalIngester(conn_factory, reader)
     if once:
@@ -169,6 +190,7 @@ def ingester(settings: Settings, once: bool, interval: float) -> None:
 @click.pass_obj
 def router(settings: Settings, once: bool, interval: float) -> None:
     conn = _open_conn(settings)
+    _warm_circuit_breaker(conn, conn_factory=lambda: _open_conn(settings))
     worker = Router(settings)
     try:
         if once:
@@ -190,7 +212,13 @@ def router(settings: Settings, once: bool, interval: float) -> None:
 
 
 @cli.command("runner")
-def runner() -> None:
+@click.pass_obj
+def runner(settings: Settings) -> None:
+    conn = _open_conn(settings)
+    try:
+        _warm_circuit_breaker(conn, conn_factory=lambda: _open_conn(settings))
+    finally:
+        conn.close()
     click.echo("Use approve, critical, retry, cancel, unlock, or retry-system.")
 
 
@@ -201,6 +229,7 @@ def runner() -> None:
 @click.pass_obj
 def projection(settings: Settings, worker_id: str, once: bool, interval: float) -> None:
     conn = _open_conn(settings)
+    _warm_circuit_breaker(conn, conn_factory=lambda: _open_conn(settings))
     sinks = {
         Stream.TASK_SNAPSHOT: LoggingSink(),
         Stream.TASK_COMMENT: LoggingSink(),
