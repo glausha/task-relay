@@ -66,7 +66,9 @@ def bump_state(
     critical: bool | None = None,
     manual_gate_required: bool | None = None,
     resume_target_state: TaskState | None | object = _UNSET,
-    current_branch: str | None | object = _UNSET,
+    lease_branch: str | None | object = _UNSET,
+    feature_branch: str | None | object = _UNSET,
+    worktree_path: str | None | object = _UNSET,
 ) -> tuple[int, bool]:
     queries = _queries()
     state_rev = ctx.task.state_rev + 1
@@ -81,10 +83,14 @@ def bump_state(
         update_kwargs["critical"] = critical
     if manual_gate_required is not None:
         update_kwargs["manual_gate_required"] = manual_gate_required
-    if resume_target_state is not _UNSET and resume_target_state is not None:
+    if resume_target_state is not _UNSET:
         update_kwargs["resume_target_state"] = resume_target_state
-    if current_branch is not _UNSET and current_branch is not None:
-        update_kwargs["current_branch"] = current_branch
+    if lease_branch is not _UNSET:
+        update_kwargs["lease_branch"] = lease_branch
+    if feature_branch is not _UNSET:
+        update_kwargs["feature_branch"] = feature_branch
+    if worktree_path is not _UNSET:
+        update_kwargs["worktree_path"] = worktree_path
     queries.update_task_state(ctx.conn, **update_kwargs)
     queries.insert_system_event(
         ctx.conn,
@@ -182,11 +188,15 @@ def apply_plan_approved(ctx: GuardContext) -> None:
 
 
 def apply_dispatch_to_implementing(ctx: GuardContext) -> None:
-    branch = ctx.event.payload.get("current_branch") or ctx.event.payload.get("branch")
+    lease_branch = ctx.event.payload.get("lease_branch") or ctx.task.lease_branch
+    feature_branch = ctx.event.payload.get("feature_branch")
+    worktree_path = ctx.event.payload.get("worktree_path")
     state_rev, critical = bump_state(
         ctx,
         TaskState.IMPLEMENTING,
-        current_branch=None if branch is None else str(branch),
+        lease_branch=None if lease_branch is None else str(lease_branch),
+        feature_branch=None if feature_branch is None else str(feature_branch),
+        worktree_path=None if worktree_path is None else str(worktree_path),
     )
     _insert_snapshot(ctx, state=TaskState.IMPLEMENTING, state_rev=state_rev, critical=critical)
 

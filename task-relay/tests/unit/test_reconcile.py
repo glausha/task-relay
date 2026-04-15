@@ -77,6 +77,9 @@ def test_reconcile_emits_resume_event_for_implementing_task(sqlite_conn: sqlite3
     assert event.payload == {
         "task_id": "task-impl",
         "plan_rev": 4,
+        "lease_branch": None,
+        "feature_branch": None,
+        "worktree_path": None,
         "worktree_clean": True,
         "heartbeat_fresh": True,
         "last_known_head_commit": "abc123",

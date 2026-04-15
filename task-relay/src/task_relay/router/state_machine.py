@@ -34,7 +34,7 @@
   (system_degraded, system_recovered)    -> resume_target_state (re-evaluate guard)
   (*, /cancel) where state != done       -> cancelled
 
-internal event types: internal.executor_finished, internal.lease_lost, internal.infra_fatal, internal.reconcile_resume, internal.system_recovered, internal.unlock_requested
+internal event types: internal.executor_finished, internal.planner_timeout, internal.reviewer_timeout, internal.lease_lost, internal.infra_fatal, internal.reconcile_resume, internal.system_recovered, internal.unlock_requested
 """
 
 from __future__ import annotations
@@ -135,6 +135,12 @@ _add(
     TaskState.PLANNING,
     "internal.infra_fatal",
     TransitionSpec(_always, _to(TaskState.SYSTEM_DEGRADED), transitions.apply_system_degraded),
+)
+_add(
+    TRANSITIONS,
+    TaskState.PLANNING,
+    "internal.planner_timeout",
+    TransitionSpec(_always, _to(TaskState.HUMAN_REVIEW_REQUIRED), transitions.apply_human_review_required),
 )
 _add(TRANSITIONS, TaskState.PLANNING, "/critical on", TransitionSpec(_always, _to(TaskState.PLANNING), transitions.apply_critical_on_same_state))
 _add(TRANSITIONS, TaskState.PLANNING, "/critical off", TransitionSpec(critical_off, _to(TaskState.PLANNING), transitions.apply_critical_off_same_state))
@@ -264,6 +270,12 @@ _add(
     TRANSITIONS,
     TaskState.REVIEWING,
     "internal.reviewer_human_review",
+    TransitionSpec(_always, _to(TaskState.HUMAN_REVIEW_REQUIRED), transitions.apply_human_review_required),
+)
+_add(
+    TRANSITIONS,
+    TaskState.REVIEWING,
+    "internal.reviewer_timeout",
     TransitionSpec(_always, _to(TaskState.HUMAN_REVIEW_REQUIRED), transitions.apply_human_review_required),
 )
 _add(TRANSITIONS, TaskState.REVIEWING, "/critical on", TransitionSpec(_always, _to(TaskState.REVIEWING), transitions.apply_critical_on_manual_gate))

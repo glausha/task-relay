@@ -114,12 +114,16 @@ class Router:
         queries = import_module("task_relay.db.queries")
         source_issue_id = event.payload.get("source_issue_id") or event.payload.get("issue_id")
         requested_by, notification_target = self._derive_task_principal(event)
+        lease_branch, feature_branch, worktree_path = self._derive_task_branches(event)
         task_id = new_task_id_from_event(event.event_id)
         queries.upsert_task_on_create(
             conn,
             task_id=task_id,
             source_issue_id=None if source_issue_id is None else str(source_issue_id),
             requested_by=requested_by,
+            lease_branch=lease_branch,
+            feature_branch=feature_branch,
+            worktree_path=worktree_path,
             notification_target=notification_target,
             created_at=event.received_at,
             updated_at=event.received_at,
@@ -141,6 +145,23 @@ class Router:
             actor = str(payload.get("actor", "unknown"))
             return (f"cli:{actor}", None)
         raise ValueError("internal events cannot create tasks")
+
+    def _derive_task_branches(self, event: InboxEvent) -> tuple[str | None, str | None, str | None]:
+        payload = event.payload
+        lease_branch = payload.get("lease_branch")
+        if lease_branch is None and event.source is Source.FORGEJO:
+            raw = payload.get("raw")
+            issue = raw.get("issue") if isinstance(raw, dict) else None
+            lease_branch = payload.get("base_branch") or payload.get("target_branch")
+            if lease_branch is None and isinstance(issue, dict):
+                lease_branch = issue.get("base_branch") or issue.get("target_branch")
+        feature_branch = payload.get("feature_branch")
+        worktree_path = payload.get("worktree_path")
+        return (
+            None if lease_branch is None else str(lease_branch),
+            None if feature_branch is None else str(feature_branch),
+            None if worktree_path is None else str(worktree_path),
+        )
 
     def _outbox_ids_for_event(self, conn: sqlite3.Connection, event_id: str) -> list[int]:
         rows = conn.execute(

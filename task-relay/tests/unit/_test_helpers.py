@@ -16,8 +16,10 @@ def seed_task(
     state: TaskState = TaskState.NEW,
     state_rev: int = 0,
     critical: bool = False,
-    current_branch: str | None = None,
+    lease_branch: str | None = None,
+    feature_branch: str | None = None,
     manual_gate_required: bool = False,
+    worktree_path: str | None = None,
     last_known_head_commit: str | None = None,
     resume_target_state: TaskState | None = None,
     requested_by: str = "alice",
@@ -30,8 +32,10 @@ def seed_task(
         state=state,
         state_rev=state_rev,
         critical=critical,
-        current_branch=current_branch,
+        lease_branch=lease_branch,
+        feature_branch=feature_branch,
         manual_gate_required=manual_gate_required,
+        worktree_path=worktree_path,
         last_known_head_commit=last_known_head_commit,
         resume_target_state=resume_target_state,
         requested_by=requested_by,
@@ -42,10 +46,10 @@ def seed_task(
     conn.execute(
         """
         INSERT INTO tasks(
-            task_id, source_issue_id, state, state_rev, critical, current_branch,
-            manual_gate_required, last_known_head_commit, resume_target_state,
+            task_id, source_issue_id, state, state_rev, critical, lease_branch,
+            feature_branch, manual_gate_required, worktree_path, last_known_head_commit, resume_target_state,
             requested_by, notification_target, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task.task_id,
@@ -53,8 +57,10 @@ def seed_task(
             task.state.value,
             task.state_rev,
             int(task.critical),
-            task.current_branch,
+            task.lease_branch,
+            task.feature_branch,
             int(task.manual_gate_required),
+            task.worktree_path,
             task.last_known_head_commit,
             None if task.resume_target_state is None else task.resume_target_state.value,
             task.requested_by,

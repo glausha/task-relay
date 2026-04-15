@@ -24,13 +24,15 @@ from task_relay.types import (
     ToolCallRecord,
 )
 
+_UNSET = object()
+
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> Task | None:
     row = fetch_one(
         conn,
         """
-        SELECT task_id, source_issue_id, state, state_rev, critical, current_branch,
-               manual_gate_required, last_known_head_commit, resume_target_state,
+        SELECT task_id, source_issue_id, state, state_rev, critical, lease_branch,
+               feature_branch, manual_gate_required, worktree_path, last_known_head_commit, resume_target_state,
                requested_by, notification_target, created_at, updated_at
         FROM tasks
         WHERE task_id = ?
@@ -46,6 +48,9 @@ def upsert_task_on_create(
     task_id: str,
     source_issue_id: str | None,
     requested_by: str,
+    lease_branch: str | None = None,
+    feature_branch: str | None = None,
+    worktree_path: str | None = None,
     notification_target: str | None = None,
     created_at: datetime,
     updated_at: datetime,
@@ -53,17 +58,20 @@ def upsert_task_on_create(
     conn.execute(
         """
         INSERT INTO tasks(
-            task_id, source_issue_id, state, state_rev, critical, current_branch,
-            manual_gate_required, last_known_head_commit, resume_target_state,
+            task_id, source_issue_id, state, state_rev, critical, lease_branch,
+            feature_branch, manual_gate_required, worktree_path, last_known_head_commit, resume_target_state,
             requested_by, notification_target, created_at, updated_at
         )
-        VALUES (?, ?, ?, 0, 0, NULL, 0, NULL, NULL, ?, ?, ?, ?)
+        VALUES (?, ?, ?, 0, 0, ?, ?, 0, ?, NULL, NULL, ?, ?, ?, ?)
         ON CONFLICT(task_id) DO NOTHING
         """,
         (
             task_id,
             source_issue_id,
             TaskState.NEW.value,
+            lease_branch,
+            feature_branch,
+            worktree_path,
             requested_by,
             notification_target,
             _to_iso(created_at),
@@ -81,8 +89,10 @@ def update_task_state(
     updated_at: datetime,
     critical: bool | None = None,
     manual_gate_required: bool | None = None,
-    resume_target_state: TaskState | None = None,
-    current_branch: str | None = None,
+    resume_target_state: TaskState | None | object = _UNSET,
+    lease_branch: str | None | object = _UNSET,
+    feature_branch: str | None | object = _UNSET,
+    worktree_path: str | None | object = _UNSET,
 ) -> None:
     assignments = ["state = ?", "state_rev = ?", "updated_at = ?"]
     params: list[Any] = [new_state.value, new_state_rev, _to_iso(updated_at)]
@@ -92,12 +102,18 @@ def update_task_state(
     if manual_gate_required is not None:
         assignments.append("manual_gate_required = ?")
         params.append(_bool_to_int(manual_gate_required))
-    if resume_target_state is not None:
+    if resume_target_state is not _UNSET:
         assignments.append("resume_target_state = ?")
-        params.append(resume_target_state.value)
-    if current_branch is not None:
-        assignments.append("current_branch = ?")
-        params.append(current_branch)
+        params.append(None if resume_target_state is None else resume_target_state.value)
+    if lease_branch is not _UNSET:
+        assignments.append("lease_branch = ?")
+        params.append(lease_branch)
+    if feature_branch is not _UNSET:
+        assignments.append("feature_branch = ?")
+        params.append(feature_branch)
+    if worktree_path is not _UNSET:
+        assignments.append("worktree_path = ?")
+        params.append(worktree_path)
     params.append(task_id)
     conn.execute(f"UPDATE tasks SET {', '.join(assignments)} WHERE task_id = ?", tuple(params))
 
@@ -130,6 +146,24 @@ def update_last_known_head_commit(
         WHERE task_id = ?
         """,
         (head_commit, _to_iso(updated_at), task_id),
+    )
+
+
+def update_task_worktree(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    lease_branch: str | None,
+    feature_branch: str | None,
+    worktree_path: str | None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE tasks
+        SET lease_branch = ?, feature_branch = ?, worktree_path = ?
+        WHERE task_id = ?
+        """,
+        (lease_branch, feature_branch, worktree_path, task_id),
     )
 
 
@@ -704,8 +738,10 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         state=TaskState(row["state"]),
         state_rev=int(row["state_rev"]),
         critical=bool(row["critical"]),
-        current_branch=row["current_branch"],
+        lease_branch=row["lease_branch"],
+        feature_branch=row["feature_branch"],
         manual_gate_required=bool(row["manual_gate_required"]),
+        worktree_path=row["worktree_path"],
         last_known_head_commit=row["last_known_head_commit"],
         resume_target_state=None
         if row["resume_target_state"] is None

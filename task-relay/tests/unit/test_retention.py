@@ -89,10 +89,10 @@ def _insert_task(sqlite_conn, *, task_id: str, now: datetime) -> None:
     sqlite_conn.execute(
         """
         INSERT INTO tasks(
-            task_id, source_issue_id, state, state_rev, critical, current_branch,
-            manual_gate_required, last_known_head_commit, resume_target_state,
+            task_id, source_issue_id, state, state_rev, critical, lease_branch,
+            feature_branch, manual_gate_required, worktree_path, last_known_head_commit, resume_target_state,
             requested_by, notification_target, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id,
@@ -101,7 +101,9 @@ def _insert_task(sqlite_conn, *, task_id: str, now: datetime) -> None:
             0,
             0,
             None,
+            None,
             0,
+            None,
             None,
             None,
             "tester",

@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
 );
 INSERT OR IGNORE INTO schema_version(version) VALUES (1);
-UPDATE schema_version SET version = MAX(version, 2);
+UPDATE schema_version SET version = MAX(version, 3);
 
 CREATE TABLE IF NOT EXISTS tasks (
     task_id                  TEXT PRIMARY KEY,
@@ -17,8 +17,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     )),
     state_rev                INTEGER NOT NULL CHECK (state_rev >= 0),
     critical                 INTEGER NOT NULL DEFAULT 0 CHECK (critical IN (0,1)),
-    current_branch           TEXT,
+    lease_branch             TEXT,
+    feature_branch           TEXT,
     manual_gate_required     INTEGER NOT NULL DEFAULT 0 CHECK (manual_gate_required IN (0,1)),
+    worktree_path            TEXT,
     last_known_head_commit   TEXT,
     resume_target_state      TEXT CHECK (resume_target_state IS NULL OR resume_target_state IN (
         'new','planning','plan_pending_approval','plan_approved',
@@ -31,7 +33,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at               TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
-CREATE INDEX IF NOT EXISTS idx_tasks_branch ON tasks(current_branch);
+CREATE INDEX IF NOT EXISTS idx_tasks_lease_branch ON tasks(lease_branch);
 
 CREATE TABLE IF NOT EXISTS plans (
     task_id           TEXT NOT NULL,

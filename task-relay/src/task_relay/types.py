@@ -156,8 +156,10 @@ class Task:
     state: TaskState
     state_rev: int
     critical: bool
-    current_branch: str | None
+    lease_branch: str | None
+    feature_branch: str | None
     manual_gate_required: bool
+    worktree_path: str | None
     last_known_head_commit: str | None
     resume_target_state: TaskState | None
     requested_by: str

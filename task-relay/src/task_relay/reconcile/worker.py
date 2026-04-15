@@ -40,7 +40,8 @@ class ReconcileWorker:
         implementing_rows = fetch_all(
             conn,
             """
-            SELECT task_id, state, current_branch, last_known_head_commit, updated_at
+            SELECT task_id, state, lease_branch, feature_branch, worktree_path,
+                   last_known_head_commit, updated_at
             FROM tasks
             WHERE state = ?
             ORDER BY task_id ASC
@@ -72,6 +73,9 @@ class ReconcileWorker:
                         payload={
                             "task_id": task_id,
                             "plan_rev": plan_rev,
+                            "lease_branch": row["lease_branch"],
+                            "feature_branch": row["feature_branch"],
+                            "worktree_path": row["worktree_path"],
                             "worktree_clean": worktree_clean,
                             "heartbeat_fresh": heartbeat_fresh,
                             "last_known_head_commit": last_known_head_commit,
