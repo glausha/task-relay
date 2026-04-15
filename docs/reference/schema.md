@@ -61,6 +61,7 @@ task truth ではないが運用に必要な情報:
 
 主要カラム:
 - `task_id`
+- `source_issue_id`
 - `state`
 - `state_rev`
 - `critical`
@@ -68,7 +69,8 @@ task truth ではないが運用に必要な情報:
 - `current_branch`
 - `last_known_head_commit`
 - `resume_target_state`
-- `requested_by`
+- `requested_by`           -- principal 形式 `forgejo:<login>` / `discord:<id>` / `cli:<user>`
+- `notification_target`    -- Discord DM 配送先 (Discord user_id 文字列)。Forgejo / cli 起点では NULL
 - `created_at`
 - `updated_at`
 
@@ -76,6 +78,8 @@ task truth ではないが運用に必要な情報:
 - `state` と truth flag は Router だけが更新する。
 - `last_known_head_commit` は ToolRunner 親が Git mutate 成功直後に更新する。
 - `resume_target_state` は `system_degraded` 遷移時に退避し、復帰時に clear する。
+- schema_version は v2。v1 から v2 で `notification_target` カラムが追加された。
+  プレ出荷段階につき ALTER TABLE migration は提供せず、DB リセット前提とする。
 
 ### 3.2 `plans`
 

@@ -453,6 +453,14 @@ operator 向け scope への写像:
 
 - `/approve` / `/critical` / `/retry` / `/cancel` は `task.requested_by` または `admin_user_ids`。
 - `/unlock` / `/retry-system` は `admin_user_ids` のみ。
+- `task.requested_by` は principal 形式の文字列で表現する。形式は ingress source ごとに次のとおり:
+  - Forgejo Webhook 経由: `forgejo:<sender_login>`
+  - Discord 経由: `discord:<user_id>`
+  - runner-cli 経由: `cli:<unix_user>`
+  - internal: 新規 task 採番には使われない
+- `/approve` / `/critical` / `/retry` / `/cancel` の認可判定は、actor の同一 source 形式と
+  `task.requested_by` の文字列一致で行う。`admin_user_ids` (Discord user_id 整数の allowlist) は
+  source 横断で許可する。
 
 `/unlock` の機能契約は§5 Ingress / runner-cli の手動介入手段として扱い、lease 実装規則は詳細設計で定義する。基本原則は「fencing token を巻き戻さず、stuck lease から wait queue を前進させる」ことに限る。`/unlock` 後、branch wait queue は即時に再評価され、次の dispatch は通常の lease 取得手順で行う。
 

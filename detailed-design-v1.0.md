@@ -89,6 +89,7 @@ projection_outbox -> Forgejo / Discord
 - `last_known_head_commit`
 - `resume_target_state`
 - `requested_by`
+- `notification_target`
 - `created_at`
 - `updated_at`
 
@@ -165,7 +166,8 @@ projection_outbox -> Forgejo / Discord
 #### `system_events`
 
 - `task_id`, `event_type`, `severity`, `payload_json`, `created_at`
-- 代表的な `event_type` には `mirror_readonly_violation_detected`, `retention_orphan_detected` を含む。
+- 代表的な `event_type` には `mirror_readonly_violation_detected`, `retention_orphan_detected`,
+  `breaker_fatal_recorded`, `breaker_reset`, `reconcile_degraded_aged` を含む。
 
 ### 2.2 補助ファイル
 
@@ -292,6 +294,10 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
   - `task_comment`: `sha256(task_id | task_comment | target | origin_event_id | comment_kind)`
   - `task_label_sync`: `sha256(task_id | task_label_sync | target | state_rev | sorted(desired_label_set))`
   - `discord_alert`: `sha256(task_id | discord_alert | target | alert_kind | state_rev)`
+    - `target` は `task.notification_target` が non-null ならその値 (Discord user_id 文字列)、
+      null なら sentinel `"admin_user_ids"` 文字列を使う。これにより rebuild 時も決定的に再現できる。
+    - sentinel `"admin_user_ids"` を観測した projection worker は admin_user_ids 全員に fanout する。
+      fanout 各 DM の冪等性は Discord footer `relay_idempotency_key=<key>` で remote dedup する。
 - rebuild は同じ key material を再計算し同じ `idempotency_key` を再利用する。
 - remote lookup は「送信済みか不明な comment / alert の重複防止」にだけ使う。
 - snapshot の状態順序判定に Forgejo mirror を使ってはならない。
@@ -399,8 +405,14 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 - `queue_order` 最小の task のみ lease 取得を試みる。
 - `fencing_token` は SQLite `branch_tokens` を transaction で `last_token += 1` して採番する。
 - Redis key:
-  - `lease:branch:<branch>` = `{task_id, fencing_token, expires_at}`
-  - TTL 30 秒
+  - `lease:branch:<branch>` = `{task_id, fencing_token}`
+  - TTL は Redis 側 PX (30 秒) で管理。`expires_at` は value に持たず、必要なら
+    `TIME + PTTL` で都度算出する。
+- 取得 / 更新 / 解放 / 監査 (`assert_readonly`) はすべて Lua script で atomic 実行する。
+  acquire は `EXISTS == 0` チェック後に `SET KEY value PX <ttl_ms>`。renew/release/assert は
+  `GET → cjson.decode → task_id と fencing_token 一致確認 → PEXPIRE / DEL / PTTL>0` の流れ。
+- アプリ側時計と Redis 時計のズレを排除し、`assert_readonly` は Redis の `PTTL > 0` を
+  source of truth とする。
 
 ### 5.2 heartbeat / renew
 
@@ -674,6 +686,13 @@ idempotency 規則:
 - `retry-system` の `stage` 引数は health check と dispatch resume 対象を指定する。
 - breaker 自体は全 stage 共有の `failure_code` 集計を reset する。`stage` 引数は auxiliary であり、breaker reset 自体は常に global である。
 - health check 成功後、`retry-system` は `internal.system_recovered` event を journal に append する。
+- breaker は in-memory に閾値判定状態を持つが、FATAL 観測時は `system_events` に
+  `event_type=breaker_fatal_recorded`, `severity=warning`, `payload={failure_code, at}` を append する。
+  reset 時も同様に `breaker_reset` を append する。
+- プロセス再起動時は `system_events` から window 内 (`breaker_window_seconds`) のイベントを
+  時刻順に再生して in-memory 状態を再構築する。再起動が breaker reset の抜け道にならないようにする。
+- これは basic-design §1.1 不変条件 5 「Redis にしか存在しない重要状態は持たない」と同じ思想で、
+  in-memory 状態は SQLite (`system_events`) から再構築可能であることを保証する。
 
 ---
 
@@ -702,6 +721,7 @@ idempotency 規則:
 - `discord_alert`
   - DM 通知
   - FIFO 必須
+  - target は `task.notification_target` または sentinel `"admin_user_ids"` (admin fanout)。
 
 ### 9.2 順序規則
 
@@ -895,6 +915,28 @@ ingester 再開位置は `journal_ingester_state(last_file, last_offset)` を一
 | `/cancel` | `task.requested_by` または `admin_user_ids` |
 | `/unlock` | `admin_user_ids` のみ |
 | `/retry-system` | `admin_user_ids` のみ |
+
+### 12.3 principal 形式
+
+主要受益ペルソナ: P1, P2, P4
+
+`task.requested_by` は ingress source ごとに固定形式の文字列で記録する:
+
+| source | 形式 | 例 |
+|---|---|---|
+| Forgejo Webhook | `forgejo:<sender_login>` | `forgejo:alice` |
+| Discord Gateway | `discord:<user_id>` | `discord:123456789012345678` |
+| runner-cli | `cli:<unix_user>` | `cli:akala` |
+
+認可判定:
+
+- `/approve` / `/critical` / `/retry` / `/cancel`: actor が `task.requested_by` と同一形式・同一値、
+  または actor の Discord user_id が `admin_user_ids` に含まれる
+- `/unlock` / `/retry-system`: actor の Discord user_id が `admin_user_ids` に含まれる場合のみ
+
+`task.notification_target` は principal 形式とは独立した列で、Discord DM 配送先 (string Discord user_id)
+を保持する。Forgejo / cli 起点の task では NULL となり、その場合は projection sink 側で
+`admin_user_ids` 全員 fanout する。
 
 ---
 
