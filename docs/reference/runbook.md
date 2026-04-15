@@ -148,10 +148,10 @@
 - task が `cancelled` になっている
 - subprocess が継続していない
 
-### 4.4 `/unlock <branch>`
+### 4.4 `/unlock <lease_branch>`
 
 使う場面:
-- branch lease が stuck して待機列が前進しない
+- `lease_branch` の branch lease が stuck して待機列が前進しない
 
 前提:
 - admin only
@@ -164,6 +164,7 @@
 
 注意:
 - 生きている subprocess は次回 renew / assert で失敗し停止する
+- これは human merge の安全性を保証する操作ではない。進める対象は relay-managed publish lane だけである
 
 ### 4.5 `/retry-system --stage <stage>`
 
@@ -234,6 +235,9 @@
 7. 成功判定を記録する
 
 詳細は [disaster-recovery.md](disaster-recovery.md) を参照する。
+
+補足:
+- `done` は merge 済みを意味しない。remote `feature_branch` と PR は human が必要時に扱う
 
 ## 7. 再構築系コマンド
 

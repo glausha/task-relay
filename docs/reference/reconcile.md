@@ -38,6 +38,7 @@ reconcile が参照するもの:
 - `branch_waiters`
 - `tool_calls`
 - `journal_ingester_state`
+- `tasks.lease_branch`, `tasks.feature_branch`, `tasks.worktree_path`
 - workspace の clean / dirty 状態
 - branch HEAD
 - 最終 heartbeat 相当の fresheness
@@ -57,6 +58,7 @@ reconcile が参照するもの:
 以下をすべて確認する:
 
 - branch HEAD が `tasks.last_known_head_commit` から進んでいない
+- `feature_branch` の HEAD が `tasks.last_known_head_commit` と一致する
 - `plan_rev` が一致する
 - 変更ファイルが `allowed_files ∪ auto_allowed_patterns` に収まる
 
@@ -71,12 +73,25 @@ reconcile が参照するもの:
 - `system_degraded` は短期復帰前提のため、直ちに wait queue から除去しない
 - 24 時間継続した task は reconcile が wait queue から除去する
 - 復帰後の再実装が必要なら Router が再 enqueue する
+- `branch_waiters.branch` は常に `lease_branch` を指す
 
 ## 6. event 生成規則
 
 reconcile が append してよい event:
 
 - `internal.reconcile_resume`
+
+`internal.reconcile_resume` payload に最低限含めるもの:
+
+- `task_id`
+- `plan_rev`
+- `lease_branch`
+- `feature_branch`
+- `worktree_path`
+- `worktree_clean`
+- `heartbeat_fresh`
+- `last_known_head_commit`
+- `observed_at`
 
 reconcile が直接やってはいけないこと:
 

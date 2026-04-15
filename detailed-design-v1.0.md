@@ -84,8 +84,10 @@ projection_outbox -> Forgejo / Discord
 - `state`
 - `state_rev`
 - `critical`
-- `current_branch`
+- `lease_branch`
+- `feature_branch`
 - `manual_gate_required`
+- `worktree_path`
 - `last_known_head_commit`
 - `resume_target_state`
 - `requested_by`
@@ -97,6 +99,10 @@ projection_outbox -> Forgejo / Discord
 
 - `manual_gate_required` は自動で false にならない。解除は `/approve` または `runner-cli approve` のみ。
 - `resume_target_state` は `* -> system_degraded` 遷移時に現在 state を退避し、復帰時に clear する。
+- `lease_branch` は wait queue / Redis lease / `/unlock` の対象であり、dispatch lane の source of truth である。
+- `feature_branch` は task 専用 branch 名であり、local worktree と remote push の head ref を表す。命名規則は `task-relay/<task_id>` を既定とする。
+- `worktree_path` は task 専用 worktree の絶対 path であり、resume 判定と cleanup に使う。
+- `feature_branch`, `worktree_path`, `last_known_head_commit` は task truth ではなく operational metadata だが、restart/reconcile 後も参照できるよう `tasks` に保持する。
 
 #### `plans`
 
@@ -139,6 +145,7 @@ projection_outbox -> Forgejo / Discord
 - `branch`, `task_id`, `queue_order`, `status`
 - `queue_order` は enqueue 時に SQLite 単調増加 INTEGER を採番。時刻は使わない。
 - `status` enum: `queued`, `leased`, `paused_system_degraded`, `removed`。
+- `branch` には `lease_branch` を入れる。`feature_branch` を入れてはならない。
 
 #### `branch_tokens`
 
@@ -325,6 +332,7 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 | From | Trigger | Guard | To |
 |---|---|---|---|
 | `planning` | validator failure が規定回数超過 | なし | `human_review_required` |
+| `planning` | `internal.planner_timeout` | なし | `human_review_required` |
 | `planning` | `internal.infra_fatal` / breaker open | なし | `system_degraded` |
 | `plan_pending_approval` | `/critical on` | `critical=false` | `plan_pending_approval` |
 | `plan_pending_approval` | `/retry --replan` | なし | `planning` |
@@ -341,6 +349,7 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 | `needs_fix` | `/retry --replan` または Router が再計画必要と判断 | なし | `planning` |
 | `reviewing` | reviewer が `decision=fail` を返す | なし | `needs_fix` |
 | `reviewing` | reviewer が `decision=human_review_required` を返す | なし | `human_review_required` |
+| `reviewing` | `internal.reviewer_timeout` | なし | `human_review_required` |
 | `human_review_required` | `/approve` | review 済みで `manual_gate_required = true` | `done` |
 | `human_review_required` | `/retry` | 実装再試行を選ぶ | `implementing` |
 | `human_review_required` | `/retry --replan` | 再計画を選ぶ | `planning` |
@@ -383,6 +392,8 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 主要な internal event_type:
 
 - `internal.executor_finished`
+- `internal.planner_timeout`
+- `internal.reviewer_timeout`
 - `internal.lease_lost`
 - `internal.infra_fatal`
 - `internal.reconcile_resume`
@@ -391,18 +402,64 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 
 これらはすべて `ingress_journal -> event_inbox -> Router` を通して処理する。
 
+event payload 契約:
+
+- `internal.planner_timeout`
+  - `task_id`
+  - `stage=planning`
+  - `failure_code=timeout`
+  - `request_id` (nullable)
+  - `attempt_count`
+  - `max_attempts`
+  - `timeout_seconds`
+  - `call_id`
+  - `adapter_name`
+  - `adapter_contract_version`
+  - `reason` (`supports_request_id_false` / `retry_budget_exhausted` / `provider_timeout`)
+- `internal.reviewer_timeout`
+  - `task_id`
+  - `stage=reviewing`
+  - `failure_code=timeout`
+  - `request_id` (nullable)
+  - `attempt_count`
+  - `max_attempts`
+  - `timeout_seconds`
+  - `call_id`
+  - `adapter_name`
+  - `adapter_contract_version`
+  - `reason` (`supports_request_id_false` / `retry_budget_exhausted` / `provider_timeout`)
+
+ToolRunner 親の責務:
+
+- `decide_timeout_retry(...)` が `GIVE_UP_HR` を返した場合、親は stage に応じて `internal.planner_timeout` または `internal.reviewer_timeout` を `ingress_journal` に append する。
+- 親は直接 `tasks.state` を変更してはならない。timeout からの `human_review_required` 判定は Router のみが行う。
+
 ---
 
 ## 5. Branch Lease 実装
 
 主要受益ペルソナ: P1, P2
 
+### 5.0 直列化の意味
+
+主要受益ペルソナ: P1, P2, P3
+
+- `lease_branch` は manual merge 安全性を保証するための lock ではない。
+- Phase 2 で lease が守るものは、同一 integration lane に対する relay-managed execution の publish 順序である。
+- 具体的には以下を守る:
+  - 同じ `lease_branch` を基底にする複数 task が、異なる base HEAD を前提に同時に `feature_branch` を publish して reviewer / 人間に順不同の artifact を見せる race
+  - 同じ `lease_branch` に対する wait queue と `/unlock` の head-of-line semantics
+  - reconcile / retry 後も「いまどの task がその integration lane を進めてよいか」を一意に決めること
+- 守らないもの:
+  - human が Forgejo 上で行う最終 merge の整合
+  - relay 外で作られた branch / PR の競合
+
 ### 5.1 取得
 
 主要受益ペルソナ: P1, P2, P3
 
 - 待機列の真実は SQLite `branch_waiters`。
-- `queue_order` 最小の task のみ lease 取得を試みる。
+- `queue_order` 最小の task のみ、その task の `lease_branch` に対する lease 取得を試みる。
 - `fencing_token` は SQLite `branch_tokens` を transaction で `last_token += 1` して採番する。
 - Redis key:
   - `lease:branch:<branch>` = `{task_id, fencing_token}`
@@ -413,6 +470,12 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
   `GET → cjson.decode → task_id と fencing_token 一致確認 → PEXPIRE / DEL / PTTL>0` の流れ。
 - アプリ側時計と Redis 時計のズレを排除し、`assert_readonly` は Redis の `PTTL > 0` を
   source of truth とする。
+- dispatch 成功時、ToolRunner 親は同一 transaction で `tasks.lease_branch`, `tasks.feature_branch`,
+  `tasks.worktree_path` を更新してから subprocess を実行する。
+- 既定値:
+  - `lease_branch`: task 投入元が指定した target branch。未指定時は repo 既定 branch。
+  - `feature_branch`: `task-relay/<task_id>`
+  - `worktree_path`: `<settings.executor_workspace_root>/<task_id>`
 
 ### 5.2 heartbeat / renew
 
@@ -428,7 +491,11 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 
 主要受益ペルソナ: P1, P2, P3
 
-- 各 Git mutate 前に `assert_lease_readonly(branch, task_id, fencing_token)` を呼ぶ。
+- `assert_lease_readonly(lease_branch, task_id, fencing_token)` は少なくとも以下の直前で呼ぶ。
+  - `git worktree add -b <feature_branch> <worktree_path> <lease_branch>`
+  - `git add`, `git rm`, `git commit`, `git amend`, `git rebase`, `git cherry-pick`, `git merge` など worktree / ref を変える command
+  - `git push origin <feature_branch>`
+  - local `feature_branch` delete / recreate
 - token 不一致または lease 欠落時は mutate を開始してはならない。
 - 各 Git mutate 成功直後に、親プロセスは SQLite transaction で `tasks.last_known_head_commit = <new HEAD sha>` を更新する。この更新は operational metadata 更新であり、`tasks.state` と `state_rev` は変更しない。
 - 親プロセスの renew が 2 回連続失敗したら親は subprocess を即時停止する。
@@ -447,6 +514,13 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 - `system_degraded` が 24 時間継続した task は reconcile が wait queue から除去し、復帰後に Router が再 enqueue する。
 - `human_review_required` や `needs_fix` から `/retry` で `implementing` へ戻る際、Router は `branch_waiters` に `queued` として再 enqueue する。
 - queue 先頭更新後、Router が次 task を dispatch する。
+- local cleanup:
+  - `done`, `cancelled`: ToolRunner 親が state 変更を観測後に `git worktree remove --force <worktree_path>` と local `git branch -D <feature_branch>` を実行する。
+  - `human_review_required`, `needs_fix`, `implementing_resume_pending`, `system_degraded`: local worktree を保持する。
+- remote cleanup:
+  - Phase 2 では remote `feature_branch` と Pull Request は task truth に含めない。
+  - `done` 後の remote branch / PR は人間 merge のため保持し、relay は自動削除しない。
+  - `cancelled` 後の remote branch / PR も relay は自動 close/delete しない。人間が Forgejo 上で明示的に整理する。
 
 ### 5.5 `/unlock`
 
@@ -457,6 +531,20 @@ Forgejo -> HMAC verify -> journal append+fsync -> 2xx -> inbox ingest
 - Router は対象 branch の Redis lease key を compare-and-delete し、`branch_waiters` の先頭 task を `queued` に戻して dispatch を再評価する。
 - `branch_tokens.last_token` は巻き戻さない。次回 lease 取得時に新しい token を採番する。
 - まだ生きている subprocess があれば、次回 renew / assert で失敗し親プロセスが停止させる。
+
+### 5.6 Feature Branch / PR lifecycle
+
+主要受益ペルソナ: P1, P2, P3
+
+- `feature_branch` は ToolRunner 親が作成・push する。push 主体を Router や Reviewer にしてはならない。
+- push timing:
+  - executor がローカル変更を完了し、最後の `assert_lease_readonly` と HEAD 記録が成功した後
+  - `internal.executor_finished` を journal に append する前
+- Pull Request:
+  - Phase 2 の Forgejo Pull Request は人間が必要時に open する。
+  - relay は PR Webhook を truth 判定に使わず、PR open / merge / close を state machine に組み込まない。
+  - これにより `done` は「reviewer と manual gate が完了した」ことを意味し、「merge 済み」を意味しない。
+- Reviewer は read-only であり、remote push や PR open/close を行ってはならない。
 
 ---
 
@@ -525,7 +613,8 @@ Planner / Reviewer adapter metadata:
 
 開始前:
 
-- branch lease 保有確認
+- `lease_branch` の branch lease 保有確認
+- `feature_branch`, `worktree_path` が task metadata と一致することの確認
 - `plan_rev` 一致確認
 - `allowed_files` と `auto_allowed_patterns` を runner に注入
 
@@ -575,6 +664,47 @@ Reviewer は acceptance criterion ごとに以下を返す:
 - `acceptance_not_met`
 - `lease_assert_missing`
 - `unexpected_generated_file`
+
+### 6.5 executor-child IPC protocol
+
+主要受益ペルソナ: P2, P3, P4
+
+- executor child IPC version は adapter contract version と独立に管理する。
+- parent/child 間で共通に持つ定数を `executor_child_protocol_version = 1` とする。
+- bump 規則:
+  - stdin / stdout message schema を後方互換なしで変える場合にだけ bump する
+  - adapter 入出力 JSON の変更は adapter contract version を bump し、IPC version は bump しない
+- 親 -> 子 stdin schema (`message_type=executor_run_request`):
+  - `protocol_version`
+  - `message_type`
+  - `task_id`
+  - `plan_rev`
+  - `lease_branch`
+  - `feature_branch`
+  - `worktree_path`
+  - `request_id` (nullable)
+  - `allowed_files[]`
+  - `auto_allowed_patterns[]`
+  - `timeout_seconds`
+- 子 -> 親 stdout schema は JSONL とし、stdout を protocol 専用に予約する。最小 frame:
+  - `protocol_version`
+  - `message_type` (`status`, `git_mutation`, `result`, `fatal`)
+  - `task_id`
+  - `call_id`
+  - `seq`
+  - `payload`
+- `message_type=result` payload:
+  - `exit_code`
+  - `failure_code` (nullable)
+  - `changed_files[]`
+  - `last_known_head_commit`
+- `message_type=git_mutation` payload:
+  - `command`
+  - `cwd`
+  - `head_before`
+  - `head_after`
+  - `asserted_lease_branch`
+- 親は `protocol_version` 不一致を検出したら child を停止し、`failure_code=tool_internal_error` として扱う。
 
 ---
 
@@ -663,6 +793,8 @@ idempotency 規則:
 - `supports_request_id = false` の adapter では `planning` / `reviewing` の `timeout` 自動再試行を禁止する。
 - `supports_request_id = false` の adapter で `planning` timeout が起きた場合は `human_review_required` とする。
 - `supports_request_id = false` の adapter で `reviewing` timeout が起きた場合も `human_review_required` とする。
+- 上記 2 ケースと retry budget 消費済みケースでは、ToolRunner 親は直接 state を変えず
+  `internal.planner_timeout` / `internal.reviewer_timeout` を journal に append する。
 
 ### 8.2 repair retry
 
@@ -856,11 +988,12 @@ ingester 再開位置は `journal_ingester_state(last_file, last_offset)` を一
 
 再開前に確認すること:
 
-- branch HEAD が `tasks.last_known_head_commit` から進んでいない
+- `feature_branch` の HEAD が `tasks.last_known_head_commit` から進んでいない
 - `plan_rev` が一致する
 - 変更ファイルが `allowed_files ∪ auto_allowed_patterns` に収まる
 
 `tasks.last_known_head_commit` は各 Git mutate 成功直後に ToolRunner 親プロセスが更新していることを前提とする。
+`lease_branch`, `feature_branch`, `worktree_path` のいずれかが欠ける場合、reconcile は楽観再開せず `human_review_required` に倒す。
 
 ### 11.3 可視化
 
@@ -948,22 +1081,68 @@ ingester 再開位置は `journal_ingester_state(last_file, last_offset)` を一
 
 主要受益ペルソナ: P4
 
-- Litestream continuous replication to S3-compatible storage
+- Litestream continuous replication to on-site MinIO bucket (live replica は 1 つだけ)
+- MinIO bucket replication で offsite S3-compatible bucket へ二段複製
 - 日次 SQLite snapshot を別物理ディスクへ
 - journal は 30 日保持、7 日はローカル + オフサイト二重化
+
+補足:
+
+- Litestream 自体は 1 live replica 制約を持つため、offsite 二重化は Litestream の複数 target ではなく object storage 側の bucket replication で実現する。
+- `rclone sync` / `restic` は定期補助バックアップには使ってよいが、RPO 60 秒の primary 手段にはしない。
 
 ### 13.2 成功判定
 
 主要受益ペルソナ: P4
 
 - `replication_lag_seconds <= 60`
+- `snapshot_age_seconds <= 86400`
+- `journal_offsite_lag_seconds <= 60`
 - 前回 restore drill 成功
-- 最新 snapshot 24 時間以内
-- journal sync lag 60 秒以内
+- `PRAGMA integrity_check = ok`
 
 restore drill 頻度: 四半期ごとに 1 回以上。
 
-### 13.3 WAL / VACUUM
+計測定義:
+
+- `replication_lag_seconds`
+  - `now_utc - latest_litestream_replica_object_last_modified`
+  - 観測対象は on-site MinIO bucket
+- `snapshot_age_seconds`
+  - `now_utc - latest_snapshot_mtime`
+- `journal_offsite_lag_seconds`
+  - `now_utc - latest_offsite_journal_object_last_modified`
+  - 判定対象は retention 対象のうち直近 7 日分
+
+### 13.3 Restore drill script contract
+
+主要受益ペルソナ: P4
+
+`deploy/restore-drill.sh` は exit code で機械判定できなければならない。
+
+必須手順:
+
+1. 最新 on-site Litestream replica から別 path に restore する。
+2. `journal_ingester_state` または `max(event_inbox.journal_offset)` を開始点に journal replay する。
+3. `PRAGMA integrity_check` を実行する。
+4. reconcile を実行する。
+5. projection rebuild を実行する。
+6. `replication_lag_seconds`, `snapshot_age_seconds`, `journal_offsite_lag_seconds` を計測する。
+7. すべての閾値を満たした場合のみ exit 0 とする。
+
+最低限出力する machine-readable 項目:
+
+- `restore_source`
+- `restore_completed`
+- `replay_completed`
+- `integrity_check_ok`
+- `reconcile_ok`
+- `projection_rebuild_ok`
+- `replication_lag_seconds`
+- `snapshot_age_seconds`
+- `journal_offsite_lag_seconds`
+
+### 13.4 WAL / VACUUM
 
 主要受益ペルソナ: P4
 
@@ -971,7 +1150,7 @@ restore drill 頻度: 四半期ごとに 1 回以上。
 - 週次 `wal_checkpoint(TRUNCATE)`
 - 月次 `VACUUM`
 
-### 13.4 Restore 手順
+### 13.5 Restore 手順
 
 主要受益ペルソナ: P4
 
@@ -985,7 +1164,35 @@ restore drill 頻度: 四半期ごとに 1 回以上。
 
 ---
 
-## 14. モバイル UX
+## 14. Phase 2 実施順序
+
+主要受益ペルソナ: P2, P4
+
+実施順序は次を正本とする:
+
+```text
+A1 || A3 -> A2 -> A4 || A5 -> A6 -> A7
+```
+
+意味:
+
+- `A1`: LLM adapters / executor-child protocol / timeout event append
+- `A3`: Redis lease integration / wait queue / assert_readonly integration test
+- `A2`: ToolRunner 親 subprocess orchestration
+- `A4`: Forgejo webhook / sink
+- `A5`: Discord bot / sink
+- `A6`: projection rebuild / retention / DR automation
+- `A7`: end-to-end verification
+
+依存理由:
+
+- `A1` と `A3` は独立に進めてよい。どちらも `A2` の入力契約を固めるが、互いには依存しない。
+- `A2` は adapter 呼び出し面 (`A1`) と lease 制御面 (`A3`) の両方を必要とするため、その後に置く。
+- `A4` と `A5` は ToolRunner 完了後に並行可能。
+- `A6` は外部反映面が揃ってから詰める。
+- `A7` は全体統合後にだけ意味を持つ。
+
+## 15. モバイル UX
 
 主要受益ペルソナ: P1, P2
 
@@ -997,7 +1204,7 @@ restore drill 頻度: 四半期ごとに 1 回以上。
 
 ---
 
-## 15. 関連ドキュメント
+## 16. 関連ドキュメント
 
 - `basic-design-v1.0.md` (本書と対になる基本設計)
 - `docs/reference/schema.md`

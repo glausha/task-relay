@@ -46,6 +46,8 @@
 主要 internal event:
 
 - `internal.executor_finished`
+- `internal.planner_timeout`
+- `internal.reviewer_timeout`
 - `internal.lease_lost`
 - `internal.infra_fatal`
 - `internal.reconcile_resume`
@@ -71,6 +73,7 @@
 | From | Trigger | Guard | To |
 |---|---|---|---|
 | `planning` | validator failure 規定回数超過 | なし | `human_review_required` |
+| `planning` | `internal.planner_timeout` | なし | `human_review_required` |
 | `planning` | `internal.infra_fatal` / breaker open | なし | `system_degraded` |
 | `plan_pending_approval` | `/critical on` | `critical=false` | `plan_pending_approval` |
 | `plan_pending_approval` | `/retry --replan` | なし | `planning` |
@@ -87,6 +90,7 @@
 | `needs_fix` | `/retry --replan` | なし | `planning` |
 | `reviewing` | reviewer `decision=fail` | なし | `needs_fix` |
 | `reviewing` | reviewer `decision=human_review_required` | なし | `human_review_required` |
+| `reviewing` | `internal.reviewer_timeout` | なし | `human_review_required` |
 | `human_review_required` | `/approve` | review 済みかつ `manual_gate_required=true` | `done` |
 | `human_review_required` | `/retry` | 実装再試行 | `implementing` |
 | `human_review_required` | `/retry --replan` | 再計画 | `planning` |
@@ -102,6 +106,7 @@
 - 復帰先が `reviewing` の場合、以前の reviewer 結果は再利用せず reviewer を再 dispatch する。
 - 復帰先が dispatchable でない、または health check を満たさない場合は `human_review_required` に送る。
 - `done` と `cancelled` は projection 永久失敗だけを理由に `system_degraded` へ送らない。
+- `lease_branch` 直列化は relay-managed publish 順序を守るためのものであり、human merge の安全性保証ではない。
 
 ## 7. `/critical` 規則
 
@@ -134,6 +139,7 @@
 ## 9. 実装メモ
 
 - ToolRunner 親は直接 state を変えない。`internal.executor_finished` や `internal.lease_lost` を journal に append する。
+- timeout 自動再試行不可時、ToolRunner 親は `internal.planner_timeout` / `internal.reviewer_timeout` を append する。
 - `/unlock` は branch lease 制御イベントであり、通常は task state を直接変えない。
 - `reviewing -> done` 判定に `pull_request` Webhook は使わない。
 

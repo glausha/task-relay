@@ -20,7 +20,8 @@
 復旧の一次対象:
 
 - SQLite WAL primary
-- Litestream replica
+- on-site Litestream replica bucket
+- offsite replica bucket (MinIO bucket replication 先)
 - 日次 snapshot
 - ingress journal
 
@@ -40,9 +41,10 @@
 以下を満たしていること:
 
 - `replication_lag_seconds <= 60`
+- `snapshot_age_seconds <= 86400`
+- `journal_offsite_lag_seconds <= 60`
 - 前回 restore drill 成功
-- 最新 snapshot が 24 時間以内
-- journal sync lag が 60 秒以内
+- `PRAGMA integrity_check = ok`
 
 restore drill 頻度:
 - 四半期ごとに 1 回以上
@@ -50,6 +52,8 @@ restore drill 頻度:
 ## 4. 保持方針
 
 - SQLite は Litestream で継続レプリケーション
+- Litestream の live replica は on-site MinIO bucket を 1 つだけ使う
+- offsite 二重化は MinIO bucket replication で行う
 - 日次 snapshot を別物理ディスクへ保持
 - journal は 30 日保持
 - journal の最初の 7 日はローカル + オフサイト二重化
@@ -62,8 +66,10 @@ restore drill 頻度:
 4. `journal_ingester_state` が無い場合は `max(event_inbox.journal_offset)` を開始点にする
 5. reconcile を実行する
 6. projection rebuild を実行する
-7. health check を実行する
-8. 成功判定を記録する
+7. `PRAGMA integrity_check` を実行する
+8. `replication_lag_seconds`, `snapshot_age_seconds`, `journal_offsite_lag_seconds` を計測する
+9. health check を実行する
+10. 成功判定を記録する
 
 補足:
 - `journal_ingester_state` と `event_inbox.journal_offset` がずれていても `unique(source, delivery_id)` により replay は冪等である
@@ -88,6 +94,17 @@ restore drill 頻度:
 - restore 成功 / 失敗
 - replay, reconcile, rebuild, health check の結果
 - 次回までの改善点
+
+`deploy/restore-drill.sh` の exit 0 条件:
+
+- restore 成功
+- replay 成功
+- reconcile 成功
+- projection rebuild 成功
+- `PRAGMA integrity_check = ok`
+- `replication_lag_seconds <= 60`
+- `snapshot_age_seconds <= 86400`
+- `journal_offsite_lag_seconds <= 60`
 
 ## 8. 非対象
 

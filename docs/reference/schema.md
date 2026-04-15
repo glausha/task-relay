@@ -25,6 +25,7 @@ Router だけが更新できる task truth:
 - `tasks.critical`
 - `tasks.manual_gate_required`
 - `tasks.resume_target_state`
+- `tasks.lease_branch`
 - `plans`
 
 ### 2.2 Event / Projection
@@ -47,6 +48,8 @@ branch 排他と dispatch 制御:
 task truth ではないが運用に必要な情報:
 
 - `tasks.last_known_head_commit`
+- `tasks.feature_branch`
+- `tasks.worktree_path`
 - `tool_calls`
 - `rate_windows`
 - `journal_ingester_state`
@@ -66,7 +69,9 @@ task truth ではないが運用に必要な情報:
 - `state_rev`
 - `critical`
 - `manual_gate_required`
-- `current_branch`
+- `lease_branch`
+- `feature_branch`
+- `worktree_path`
 - `last_known_head_commit`
 - `resume_target_state`
 - `requested_by`           -- principal 形式 `forgejo:<login>` / `discord:<id>` / `cli:<user>`
@@ -76,9 +81,11 @@ task truth ではないが運用に必要な情報:
 
 規則:
 - `state` と truth flag は Router だけが更新する。
+- `lease_branch` は wait queue / Redis lease / `/unlock` の対象であり、dispatch lane の真実とみなす。
+- `feature_branch`, `worktree_path`, `last_known_head_commit` は operational metadata だが restart/reconcile のため保持する。
 - `last_known_head_commit` は ToolRunner 親が Git mutate 成功直後に更新する。
 - `resume_target_state` は `system_degraded` 遷移時に退避し、復帰時に clear する。
-- schema_version は v2。v1 から v2 で `notification_target` カラムが追加された。
+- schema_version は v3。v2 から v3 で `current_branch` を廃止し、`lease_branch`, `feature_branch`, `worktree_path` を追加した。
   プレ出荷段階につき ALTER TABLE migration は提供せず、DB リセット前提とする。
 
 ### 3.2 `plans`
@@ -155,7 +162,7 @@ task truth ではないが運用に必要な情報:
 ### 3.6 `branch_waiters`
 
 役割:
-- branch ごとの dispatch 待機列の真実源。
+- `lease_branch` ごとの dispatch 待機列の真実源。
 
 主要カラム:
 - `branch`
@@ -164,6 +171,7 @@ task truth ではないが運用に必要な情報:
 - `status`
 
 規則:
+- `branch` には `lease_branch` を入れる。`feature_branch` を入れてはならない。
 - `queue_order` は SQLite 単調増加 INTEGER を使う。
 - `status` enum は `queued`, `leased`, `paused_system_degraded`, `removed`。
 

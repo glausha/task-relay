@@ -67,8 +67,20 @@
 | renew 2 回連続失敗 | 親が subprocess を停止し、`internal.lease_lost` を append する |
 | `cancelled` commit 後の通知喪失 | 親の polling fallback で停止を検知する |
 | Git mutate 前の token 不一致 | mutate を開始しない |
+| `feature_branch` push 前の lease 欠落 | remote publish を開始しない |
 
-### 3.5 Reconcile / Restart
+### 3.5 Timeout event formalization
+
+対応する ops-card:
+- [../guides/ops-cards/human-review-required.md](../guides/ops-cards/human-review-required.md)
+
+| 注入点 | 期待結果 |
+|---|---|
+| planner timeout, `supports_request_id=false` | 親が `internal.planner_timeout` を append し Router が `human_review_required` に送る |
+| reviewer timeout, retry budget 消費済み | 親が `internal.reviewer_timeout` を append し Router が `human_review_required` に送る |
+| timeout event payload 欠損 | 楽観遷移せず `human_review_required` と監査可能 payload を優先する |
+
+### 3.6 Reconcile / Restart
 
 対応する ops-card:
 - [../guides/ops-cards/system-degraded.md](../guides/ops-cards/system-degraded.md)
@@ -80,7 +92,7 @@
 | `implementing` 中に停止、dirty かつ条件一致 | `implementing_resume_pending` に入る |
 | `implementing_resume_pending` で 120 秒経過 | `human_review_required` |
 
-### 3.6 Disaster Recovery
+### 3.7 Disaster Recovery
 
 対応する ops-card:
 - [../guides/ops-cards/restore-drill.md](../guides/ops-cards/restore-drill.md)
@@ -90,6 +102,7 @@
 | SQLite 消失、replica あり | restore -> replay -> reconcile -> rebuild で復旧できる |
 | `journal_ingester_state` 欠損 | `max(event_inbox.journal_offset)` から replay できる |
 | restore 後の rebuild | 欠損補完として完走する |
+| offsite journal lag > 60s | restore drill script が非 0 exit で失敗を返す |
 
 ## 4. 実施タイミング
 
