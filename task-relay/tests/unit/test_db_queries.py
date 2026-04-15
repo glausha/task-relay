@@ -11,6 +11,7 @@ from task_relay.db.queries import (
     insert_system_event,
     mark_outbox_sent,
     mark_processed,
+    update_task_notification_target,
     upsert_task_on_create,
     claim_next_outbox,
 )
@@ -24,7 +25,8 @@ def test_task_round_trip(sqlite_conn) -> None:
         sqlite_conn,
         task_id="task-1",
         source_issue_id="issue-1",
-        requested_by="alice",
+        requested_by="forgejo:alice",
+        notification_target=None,
         created_at=now,
         updated_at=now,
     )
@@ -35,7 +37,27 @@ def test_task_round_trip(sqlite_conn) -> None:
     assert task.task_id == "task-1"
     assert task.source_issue_id == "issue-1"
     assert task.state is TaskState.NEW
-    assert task.requested_by == "alice"
+    assert task.requested_by == "forgejo:alice"
+    assert task.notification_target is None
+
+
+def test_update_task_notification_target(sqlite_conn) -> None:
+    now = datetime(2026, 4, 15, 0, 0, tzinfo=timezone.utc)
+    upsert_task_on_create(
+        sqlite_conn,
+        task_id="task-1",
+        source_issue_id="issue-1",
+        requested_by="forgejo:alice",
+        notification_target=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    update_task_notification_target(sqlite_conn, "task-1", "42")
+
+    task = get_task(sqlite_conn, "task-1")
+    assert task is not None
+    assert task.notification_target == "42"
 
 
 def test_event_inbox_round_trip(sqlite_conn) -> None:
@@ -66,7 +88,8 @@ def test_outbox_round_trip(sqlite_conn) -> None:
         sqlite_conn,
         task_id="task-1",
         source_issue_id=None,
-        requested_by="alice",
+        requested_by="forgejo:alice",
+        notification_target=None,
         created_at=now,
         updated_at=now,
     )

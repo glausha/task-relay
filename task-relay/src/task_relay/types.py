@@ -100,6 +100,9 @@ class CriterionStatus(str, Enum):
 class AdapterContract:
     name: str
     version: str
+    # True: timeout retry may reuse the same request_id (detailed-design §8.1).
+    # False: planning/reviewing timeout auto-retry is forbidden and caller must fall back to human_review_required.
+    # executing never allows timeout/oom_killed auto-retry regardless of this flag.
     supports_request_id: bool
 
 
@@ -158,6 +161,7 @@ class Task:
     last_known_head_commit: str | None
     resume_target_state: TaskState | None
     requested_by: str
+    notification_target: str | None
     created_at: datetime
     updated_at: datetime
 

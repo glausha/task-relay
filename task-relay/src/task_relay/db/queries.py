@@ -31,7 +31,7 @@ def get_task(conn: sqlite3.Connection, task_id: str) -> Task | None:
         """
         SELECT task_id, source_issue_id, state, state_rev, critical, current_branch,
                manual_gate_required, last_known_head_commit, resume_target_state,
-               requested_by, created_at, updated_at
+               requested_by, notification_target, created_at, updated_at
         FROM tasks
         WHERE task_id = ?
         """,
@@ -46,6 +46,7 @@ def upsert_task_on_create(
     task_id: str,
     source_issue_id: str | None,
     requested_by: str,
+    notification_target: str | None = None,
     created_at: datetime,
     updated_at: datetime,
 ) -> None:
@@ -54,9 +55,9 @@ def upsert_task_on_create(
         INSERT INTO tasks(
             task_id, source_issue_id, state, state_rev, critical, current_branch,
             manual_gate_required, last_known_head_commit, resume_target_state,
-            requested_by, created_at, updated_at
+            requested_by, notification_target, created_at, updated_at
         )
-        VALUES (?, ?, ?, 0, 0, NULL, 0, NULL, NULL, ?, ?, ?)
+        VALUES (?, ?, ?, 0, 0, NULL, 0, NULL, NULL, ?, ?, ?, ?)
         ON CONFLICT(task_id) DO NOTHING
         """,
         (
@@ -64,6 +65,7 @@ def upsert_task_on_create(
             source_issue_id,
             TaskState.NEW.value,
             requested_by,
+            notification_target,
             _to_iso(created_at),
             _to_iso(updated_at),
         ),
@@ -98,6 +100,21 @@ def update_task_state(
         params.append(current_branch)
     params.append(task_id)
     conn.execute(f"UPDATE tasks SET {', '.join(assignments)} WHERE task_id = ?", tuple(params))
+
+
+def update_task_notification_target(
+    conn: sqlite3.Connection,
+    task_id: str,
+    notification_target: str | None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE tasks
+        SET notification_target = ?
+        WHERE task_id = ?
+        """,
+        (notification_target, task_id),
+    )
 
 
 def update_last_known_head_commit(
@@ -694,6 +711,9 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         if row["resume_target_state"] is None
         else TaskState(row["resume_target_state"]),
         requested_by=str(row["requested_by"]),
+        notification_target=None
+        if row["notification_target"] is None
+        else str(row["notification_target"]),
         created_at=_parse_datetime(str(row["created_at"])),
         updated_at=_parse_datetime(str(row["updated_at"])),
     )

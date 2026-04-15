@@ -130,7 +130,8 @@ def _insert_task_and_outbox(
         conn,
         task_id="task-1",
         source_issue_id="issue-1",
-        requested_by="42",
+        requested_by="discord:42",
+        notification_target="42",
         created_at=now,
         updated_at=now,
     )

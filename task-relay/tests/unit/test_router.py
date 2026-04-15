@@ -45,7 +45,7 @@ def test_new_issue_opened_transitions_to_planning_with_deterministic_task_id(sql
     event = _event(
         event_id="evt-opened",
         event_type="issues.opened",
-        payload={"source_issue_id": "42", "requested_by": "alice"},
+        payload={"source_issue_id": "42", "sender_login": "alice"},
         source=Source.FORGEJO,
     )
     queries.insert_event(sqlite_conn, event)
@@ -68,10 +68,30 @@ def test_new_issue_opened_transitions_to_planning_with_deterministic_task_id(sql
     assert result.skipped is False
     assert task is not None
     assert task.state is TaskState.PLANNING
+    assert task.requested_by == "forgejo:alice"
+    assert task.notification_target is None
     assert task_row is not None
     assert task_row["state"] == TaskState.PLANNING.value
     assert task_row["state_rev"] >= 1
     assert [row["stream"] for row in stream_rows] == ["task_snapshot"]
+
+
+def test_new_discord_issue_opened_sets_notification_target(sqlite_conn) -> None:
+    router = Router(Settings())
+    event = _event(
+        event_id="evt-discord-opened",
+        event_type="issues.opened",
+        payload={"source_issue_id": "84", "actor": "123"},
+        source=Source.DISCORD,
+    )
+    queries.insert_event(sqlite_conn, event)
+
+    result = router.run_once(sqlite_conn, event)
+
+    task = queries.get_task(sqlite_conn, result.task_id)
+    assert task is not None
+    assert task.requested_by == "discord:123"
+    assert task.notification_target == "123"
 
 
 def test_planning_plan_ready_without_auto_ok_goes_pending_approval(sqlite_conn) -> None:

@@ -116,6 +116,7 @@ def _base_payload(body_json: dict[str, Any]) -> dict[str, Any]:
         "repository_id": repository.get("id"),
         "repository_name": repository.get("full_name"),
         "sender_id": sender.get("id"),
+        "sender_login": sender.get("login"),
         "raw": body_json,
     }
 

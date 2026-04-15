@@ -8,6 +8,10 @@ from task_relay.clock import Clock, SystemClock
 from task_relay.types import CanonicalEvent, Source
 
 
+def cli_actor_principal(actor: str) -> str:
+    return f"cli:{actor}"
+
+
 def build_cli_event(
     *,
     event_type: str,
@@ -62,7 +66,7 @@ def is_authorized(
     admin_user_ids: list[int],
 ) -> bool:
     if event_type in OWNER_OR_ADMIN_EVENTS:
-        return task_requested_by == str(actor_id) or actor_id in admin_user_ids
+        return task_requested_by == f"discord:{actor_id}" or actor_id in admin_user_ids
     if event_type in ADMIN_ONLY_EVENTS:
         return actor_id in admin_user_ids
     return True

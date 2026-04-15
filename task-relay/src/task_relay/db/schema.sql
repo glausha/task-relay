@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
 );
 INSERT OR IGNORE INTO schema_version(version) VALUES (1);
+UPDATE schema_version SET version = MAX(version, 2);
 
 CREATE TABLE IF NOT EXISTS tasks (
     task_id                  TEXT PRIMARY KEY,
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS tasks (
         'reviewing','human_review_required','done','cancelled','system_degraded'
     )),
     requested_by             TEXT NOT NULL,
+    notification_target      TEXT, -- Discord user ID (string). None falls back to admin_user_ids.
     created_at               TEXT NOT NULL,
     updated_at               TEXT NOT NULL
 );

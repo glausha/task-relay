@@ -74,12 +74,12 @@ def test_build_cli_event_uses_deterministic_delivery_id() -> None:
 
 
 def test_is_authorized_accepts_request_owner() -> None:
-    assert is_authorized("/approve", 42, "42", [7]) is True
+    assert is_authorized("/approve", 42, "discord:42", [7]) is True
 
 
 def test_is_authorized_rejects_non_admin_non_owner() -> None:
-    assert is_authorized("/retry", 42, "99", [7]) is False
+    assert is_authorized("/retry", 42, "discord:99", [7]) is False
 
 
 def test_is_authorized_rejects_unlock_for_non_admin() -> None:
-    assert is_authorized("/unlock", 42, "42", [7]) is False
+    assert is_authorized("/unlock", 42, "discord:42", [7]) is False

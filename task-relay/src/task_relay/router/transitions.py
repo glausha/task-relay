@@ -4,11 +4,13 @@ import json
 from datetime import timedelta
 from importlib import import_module
 
+from task_relay.projection.labels import MANAGED_LABELS
 from task_relay.router.guards import GuardContext, resume_grace_ok
 from task_relay.router.idempotency import discord_alert_key, label_sync_key, snapshot_key
 from task_relay.types import AlertKind, Severity, Stream, TaskState
 
 _UNSET = object()
+_ADMIN_USER_IDS_SENTINEL = "admin_user_ids"
 
 
 def _queries():
@@ -20,7 +22,8 @@ def _issue_target(ctx: GuardContext) -> str:
 
 
 def _discord_target(ctx: GuardContext) -> str:
-    return str(ctx.task.requested_by)
+    # Keep the outbox target deterministic when sink-side admin fanout is required.
+    return ctx.task.notification_target or _ADMIN_USER_IDS_SENTINEL
 
 
 def _task_url(ctx: GuardContext) -> str:
@@ -52,8 +55,6 @@ def _desired_labels(state: TaskState, *, critical: bool) -> list[str]:
         labels.add("human_review_required")
     if state is TaskState.CANCELLED:
         labels.add("cancelled")
-    if state is TaskState.DONE:
-        labels.add("done")
     return sorted(labels)
 
 
@@ -120,8 +121,11 @@ def _insert_snapshot(ctx: GuardContext, *, state: TaskState, state_rev: int, cri
 def _insert_label_sync(ctx: GuardContext, *, state: TaskState, state_rev: int, critical: bool) -> int:
     queries = _queries()
     target = _issue_target(ctx)
-    labels = _desired_labels(state, critical=critical)
-    payload = {"desired_labels": labels}
+    desired_labels = _desired_labels(state, critical=critical)
+    payload = {
+        "desired_labels": desired_labels,
+        "managed_labels": sorted(MANAGED_LABELS),
+    }
     return queries.insert_outbox(
         ctx.conn,
         task_id=ctx.task.task_id,
@@ -130,7 +134,7 @@ def _insert_label_sync(ctx: GuardContext, *, state: TaskState, state_rev: int, c
         origin_event_id=ctx.event.event_id,
         payload_json=json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
         state_rev=state_rev,
-        idempotency_key=label_sync_key(ctx.task.task_id, target, state_rev, labels),
+        idempotency_key=label_sync_key(ctx.task.task_id, target, state_rev, desired_labels),
         next_attempt_at=_next_attempt_at(ctx),
     )
 

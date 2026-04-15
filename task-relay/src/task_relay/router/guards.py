@@ -20,6 +20,20 @@ class GuardContext:
     conn: sqlite3.Connection
 
 
+def _event_actor_principal(ctx: GuardContext) -> str | None:
+    payload = ctx.event.payload
+    if ctx.event.source.value == "discord":
+        actor = payload.get("actor")
+        return None if actor is None else f"discord:{actor}"
+    if ctx.event.source.value == "forgejo":
+        actor = payload.get("sender_login", "unknown")
+        return f"forgejo:{actor}"
+    if ctx.event.source.value == "cli":
+        return f"cli:{payload.get('actor', 'unknown')}"
+    actor = payload.get("requested_by")
+    return None if actor is None else str(actor)
+
+
 def _payload_bool(payload: dict[str, object], *keys: str) -> bool:
     for key in keys:
         if key in payload:
@@ -116,10 +130,10 @@ def plan_rev_matches(ctx: GuardContext, plan_rev: object) -> bool:
 
 
 def critical_off(ctx: GuardContext) -> bool:
-    payload = ctx.event.payload
-    actor = payload.get("requested_by") or payload.get("actor")
-    if actor == ctx.task.requested_by:
+    actor_principal = _event_actor_principal(ctx)
+    if actor_principal == ctx.task.requested_by:
         return True
+    payload = ctx.event.payload
     actor_user_id = payload.get("actor_user_id") or payload.get("user_id") or payload.get("actor_id")
     try:
         return int(actor_user_id) in ctx.settings.admin_user_ids

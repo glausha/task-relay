@@ -21,6 +21,7 @@ def seed_task(
     last_known_head_commit: str | None = None,
     resume_target_state: TaskState | None = None,
     requested_by: str = "alice",
+    notification_target: str | None = None,
     updated_at: datetime | None = None,
 ) -> Task:
     task = Task(
@@ -34,6 +35,7 @@ def seed_task(
         last_known_head_commit=last_known_head_commit,
         resume_target_state=resume_target_state,
         requested_by=requested_by,
+        notification_target=notification_target,
         created_at=created_at,
         updated_at=created_at if updated_at is None else updated_at,
     )
@@ -42,8 +44,8 @@ def seed_task(
         INSERT INTO tasks(
             task_id, source_issue_id, state, state_rev, critical, current_branch,
             manual_gate_required, last_known_head_commit, resume_target_state,
-            requested_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            requested_by, notification_target, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task.task_id,
@@ -56,6 +58,7 @@ def seed_task(
             task.last_known_head_commit,
             None if task.resume_target_state is None else task.resume_target_state.value,
             task.requested_by,
+            task.notification_target,
             task.created_at.isoformat(),
             task.updated_at.isoformat(),
         ),

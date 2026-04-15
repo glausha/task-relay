@@ -47,7 +47,7 @@ def test_end_to_end_issue_opened_reaches_projection_sink(tmp_path: Path) -> None
         source=Source.FORGEJO,
         event_type="issues.opened",
         delivery_id="delivery-issue-opened",
-        payload={"source_issue_id": "42", "requested_by": "alice"},
+        payload={"source_issue_id": "42", "sender_login": "alice"},
         clock=FrozenClock(event_time),
     )
 
@@ -110,7 +110,7 @@ def test_end_to_end_cancel_event_updates_task_state(tmp_path: Path) -> None:
         source=Source.CLI,
         event_type="issues.opened",
         delivery_id="delivery-seed",
-        payload={"source_issue_id": "77", "requested_by": "alice"},
+        payload={"source_issue_id": "77", "actor": "alice"},
         clock=FrozenClock(event_time),
     )
 
