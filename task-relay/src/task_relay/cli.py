@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -39,6 +40,8 @@ from .retention.log_retention import LogRetention
 from .router.router import Router
 from .status import load_status_snapshot
 from .types import Stream
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _open_conn(settings: Settings) -> sqlite3.Connection:
@@ -475,13 +478,16 @@ def projection(
         if with_discord:
             token = settings.discord_bot_token.get_secret_value()
             if not token:
-                raise click.ClickException("--with-discord requires TASK_RELAY_DISCORD_BOT_TOKEN")
-            discord_runtime = _start_projection_discord_runtime(token)
-            discord_sink = DiscordSink(
-                client=discord_runtime.client,
-                loop=discord_runtime.loop,
-                admin_user_ids=settings.admin_user_ids,
-            )
+                LOGGER.warning(
+                    "projection requested --with-discord but TASK_RELAY_DISCORD_BOT_TOKEN is empty; continuing without discord client"
+                )
+            else:
+                discord_runtime = _start_projection_discord_runtime(token)
+                discord_sink = DiscordSink(
+                    client=discord_runtime.client,
+                    loop=discord_runtime.loop,
+                    admin_user_ids=settings.admin_user_ids,
+                )
         sinks = {
             Stream.TASK_SNAPSHOT: forgejo_sink,
             Stream.TASK_COMMENT: forgejo_sink,

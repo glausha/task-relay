@@ -44,6 +44,25 @@ def test_projection_worker_marks_sent_on_success(sqlite_conn: sqlite3.Connection
     assert row is not None
     assert row["sent_at"] == _iso_z(fixed)
     assert len(sink.records) == 1
+    event = sqlite_conn.execute(
+        """
+        SELECT task_id, event_type, severity, payload_json, created_at
+        FROM system_events
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    assert event is not None
+    assert event["task_id"] == "task-1"
+    assert event["event_type"] == "projection_sent"
+    assert event["severity"] == "info"
+    assert event["created_at"] == _iso_z(fixed)
+    assert json.loads(str(event["payload_json"])) == {
+        "outbox_id": outbox_id,
+        "stream": Stream.TASK_COMMENT.value,
+        "target": "org/repo",
+        "worker_id": "worker-1",
+    }
 
 
 def test_projection_worker_skips_superseded_snapshot(sqlite_conn: sqlite3.Connection) -> None:
@@ -115,6 +134,27 @@ def test_projection_worker_reschedules_after_sink_failure(sqlite_conn: sqlite3.C
     assert row["sent_at"] is None
     assert row["claimed_by"] is None
     assert datetime.fromisoformat(str(row["next_attempt_at"])) > original_next_attempt_at
+    event = sqlite_conn.execute(
+        """
+        SELECT task_id, event_type, severity, payload_json, created_at
+        FROM system_events
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    assert event is not None
+    assert event["task_id"] == "task-1"
+    assert event["event_type"] == "projection_send_failed"
+    assert event["severity"] == "warning"
+    assert event["created_at"] == _iso_z(fixed)
+    assert json.loads(str(event["payload_json"])) == {
+        "attempt_count": 1,
+        "error": "boom",
+        "outbox_id": outbox_id,
+        "stream": Stream.TASK_COMMENT.value,
+        "target": "org/repo",
+        "worker_id": "worker-1",
+    }
 
 
 def test_projection_worker_reclaims_stale_claim_before_processing_next_row(sqlite_conn: sqlite3.Connection) -> None:
@@ -172,6 +212,24 @@ def test_projection_worker_reclaims_stale_claim_before_processing_next_row(sqlit
     assert rows[0]["claimed_by"] == "worker-1"
     assert rows[1]["sent_at"] == _iso_z(fixed)
     assert rows[1]["claimed_by"] == "worker-1"
+    event = sqlite_conn.execute(
+        """
+        SELECT task_id, event_type, severity, payload_json, created_at
+        FROM system_events
+        WHERE event_type = 'projection_stale_claim_reclaimed'
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    assert event is not None
+    assert event["task_id"] is None
+    assert event["severity"] == "warning"
+    assert event["created_at"] == _iso_z(fixed)
+    assert json.loads(str(event["payload_json"])) == {
+        "count": 1,
+        "stale_after_seconds": 600,
+        "worker_id": "worker-1",
+    }
 
 
 def _insert_task_and_outbox(

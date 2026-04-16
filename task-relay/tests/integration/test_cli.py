@@ -226,6 +226,17 @@ def test_projection_cli_help_lists_with_discord_flag(cli_env: dict[str, Path | s
     assert "--with-discord" in result.output
 
 
+def test_projection_cli_with_discord_flag_ignores_empty_token(cli_env: dict[str, Path | str]) -> None:
+    runner = CliRunner()
+    migrate_result = runner.invoke(cli, ["migrate"])
+    assert migrate_result.exit_code == 0
+
+    result = runner.invoke(cli, ["projection", "--with-discord", "--once"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "0"
+
+
 def test_retention_cli_json_outputs_dict(cli_env: dict[str, Path | str]) -> None:
     runner = CliRunner()
     migrate_result = runner.invoke(cli, ["migrate"])

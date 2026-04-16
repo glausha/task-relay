@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Protocol
 
 from task_relay.config import Settings
+from task_relay.db.connection import tx
 from task_relay.db.queries import (
     claim_next_outbox,
     get_cursor,
@@ -46,11 +47,23 @@ class ProjectionWorker:
     def step(self) -> int:
         now = self._clock.now()
         # WHY: a crashed worker must not permanently block older rows in the same projection lane.
-        reclaim_stale_outbox(
-            self._conn,
-            now_iso=now.isoformat(),
-            stale_after_seconds=self._stale_claim_seconds,
-        )
+        with tx(self._conn):
+            reclaimed_count = reclaim_stale_outbox(
+                self._conn,
+                now_iso=now.isoformat(),
+                stale_after_seconds=self._stale_claim_seconds,
+            )
+            if reclaimed_count > 0:
+                self._append_worker_event(
+                    event_type="projection_stale_claim_reclaimed",
+                    severity=Severity.WARNING,
+                    payload={
+                        "count": reclaimed_count,
+                        "stale_after_seconds": self._stale_claim_seconds,
+                        "worker_id": self._worker_id,
+                    },
+                    now=now,
+                )
         record = claim_next_outbox(self._conn, self._worker_id, now.isoformat())
         if record is None:
             return 0
@@ -65,16 +78,29 @@ class ProjectionWorker:
         except Exception as exc:
             self._handle_failure(record=record, error=exc, now=now)
             return 1
-        mark_outbox_sent(self._conn, record.outbox_id, now)
-        if record.stream is Stream.TASK_SNAPSHOT:
-            upsert_cursor(
-                self._conn,
-                task_id=record.task_id,
-                stream=record.stream,
-                target=record.target,
-                last_sent_state_rev=record.state_rev,
-                last_sent_outbox_id=record.outbox_id,
-                updated_at=now,
+        with tx(self._conn):
+            mark_outbox_sent(self._conn, record.outbox_id, now)
+            if record.stream is Stream.TASK_SNAPSHOT:
+                upsert_cursor(
+                    self._conn,
+                    task_id=record.task_id,
+                    stream=record.stream,
+                    target=record.target,
+                    last_sent_state_rev=record.state_rev,
+                    last_sent_outbox_id=record.outbox_id,
+                    updated_at=now,
+                )
+            self._append_outbox_event(
+                record=record,
+                event_type="projection_sent",
+                severity=Severity.INFO,
+                payload={
+                    "outbox_id": record.outbox_id,
+                    "stream": record.stream.value,
+                    "target": record.target,
+                    "worker_id": self._worker_id,
+                },
+                now=now,
             )
         return 1
 
@@ -90,28 +116,38 @@ class ProjectionWorker:
     def _handle_failure(self, *, record: OutboxRecord, error: Exception, now: datetime) -> None:
         attempt_count = record.attempt_count + 1
         next_attempt_at = now + timedelta(seconds=self._backoff_seconds(attempt_count))
-        reschedule_outbox(self._conn, record.outbox_id, next_attempt_at, attempt_count)
-        if not self._should_degrade(record=record, attempt_count=attempt_count, now=now):
-            return
-        payload = json.dumps(
-            {
-                "attempt_count": attempt_count,
-                "error": str(error),
-                "outbox_id": record.outbox_id,
-                "stream": record.stream.value,
-                "target": record.target,
-                "worker_id": self._worker_id,
-            },
-            sort_keys=True,
-        )
-        append_system_event(
-            self._conn,
-            task_id=record.task_id,
-            event_type="internal.infra_fatal",
-            severity=Severity.ERROR,
-            payload_json=payload,
-            created_at_iso=now.isoformat(),
-        )
+        should_degrade = self._should_degrade(record=record, attempt_count=attempt_count, now=now)
+        with tx(self._conn):
+            reschedule_outbox(self._conn, record.outbox_id, next_attempt_at, attempt_count)
+            self._append_outbox_event(
+                record=record,
+                event_type="projection_send_failed",
+                severity=Severity.WARNING,
+                payload={
+                    "attempt_count": attempt_count,
+                    "error": str(error),
+                    "outbox_id": record.outbox_id,
+                    "stream": record.stream.value,
+                    "target": record.target,
+                    "worker_id": self._worker_id,
+                },
+                now=now,
+            )
+            if should_degrade:
+                self._append_outbox_event(
+                    record=record,
+                    event_type="internal.infra_fatal",
+                    severity=Severity.ERROR,
+                    payload={
+                        "attempt_count": attempt_count,
+                        "error": str(error),
+                        "outbox_id": record.outbox_id,
+                        "stream": record.stream.value,
+                        "target": record.target,
+                        "worker_id": self._worker_id,
+                    },
+                    now=now,
+                )
 
     def _backoff_seconds(self, attempt_count: int) -> int:
         initial = self._settings.projection_retry_initial_seconds
@@ -122,3 +158,55 @@ class ProjectionWorker:
         if attempt_count >= self._settings.projection_retry_max_attempts:
             return True
         return now - record.next_attempt_at >= timedelta(hours=self._settings.projection_retry_degrade_hours)
+
+    def _append_outbox_event(
+        self,
+        *,
+        record: OutboxRecord,
+        event_type: str,
+        severity: Severity,
+        payload: dict[str, object],
+        now: datetime,
+    ) -> None:
+        self._append_system_event(
+            task_id=record.task_id,
+            event_type=event_type,
+            severity=severity,
+            payload=payload,
+            now=now,
+        )
+
+    def _append_worker_event(
+        self,
+        *,
+        event_type: str,
+        severity: Severity,
+        payload: dict[str, object],
+        now: datetime,
+    ) -> None:
+        self._append_system_event(
+            task_id=None,
+            event_type=event_type,
+            severity=severity,
+            payload=payload,
+            now=now,
+        )
+
+    def _append_system_event(
+        self,
+        *,
+        task_id: str | None,
+        event_type: str,
+        severity: Severity,
+        payload: dict[str, object],
+        now: datetime,
+    ) -> None:
+        # WHY: projection delivery side effects need a durable audit trail for post-incident review.
+        append_system_event(
+            self._conn,
+            task_id=task_id,
+            event_type=event_type,
+            severity=severity,
+            payload_json=json.dumps(payload, sort_keys=True),
+            created_at_iso=now.isoformat(),
+        )

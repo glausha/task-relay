@@ -35,6 +35,10 @@ sudoedit /etc/task-relay/task-relay.env
 sudo bash deploy/install.sh
 ```
 
+環境変数メモ:
+- `task-relay-projection.service` は `task-relay projection --with-discord` で起動するため、Discord DM alert を実送信する環境では `TASK_RELAY_DISCORD_BOT_TOKEN` を `/etc/task-relay/task-relay.env` に設定する。
+- token 未設定でも service 自体は起動し、projection worker は warning を出して Discord client なしで継続する。この場合 `discord_alert` の実送信は行われない。
+
 起動:
 
 ```bash
@@ -72,4 +76,3 @@ sudo journalctl -u task-relay-router.service -n 100 --no-pager
 - 起動失敗時は `task-relay-db-check.service` から順に `systemctl status` と `journalctl -u <unit>` を確認します。
 - SQLite restore 後は `deploy/restore-drill.sh <sqlite_path> <journal_dir>` を実行し、`db-check -> journal-replay -> reconcile -> health-check` を再確認します。
 - breaker や queue stuck の admin 介入は、systemd 再起動より前に原因と影響範囲を確認してから実施します。
-

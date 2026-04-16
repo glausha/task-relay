@@ -174,7 +174,8 @@ projection_outbox -> Forgejo / Discord
 
 - `task_id`, `event_type`, `severity`, `payload_json`, `created_at`
 - 代表的な `event_type` には `mirror_readonly_violation_detected`, `retention_orphan_detected`,
-  `breaker_fatal_recorded`, `breaker_reset`, `reconcile_degraded_aged` を含む。
+  `breaker_fatal_recorded`, `breaker_reset`, `reconcile_degraded_aged`, `projection_sent`,
+  `projection_send_failed`, `projection_stale_claim_reclaimed` を含む。
 
 ### 2.2 補助ファイル
 
