@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import sqlite3
 from typing import Any
 
 import httpx
 import yaml
 
+from task_relay.projection.mirror_check import check_mirror_consistency
 from task_relay.projection.labels import MANAGED_LABELS
 from task_relay.types import OutboxRecord
 from task_relay.types import Stream
@@ -19,6 +21,7 @@ class ForgejoSink:
         token: str,
         owner: str,
         repo: str,
+        conn: sqlite3.Connection | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         self._client = client or httpx.Client(
@@ -26,16 +29,27 @@ class ForgejoSink:
             headers={"Authorization": f"token {token}"},
             timeout=30.0,
         )
+        self._conn = conn
         self._owner = owner
         self._repo = repo
 
     def send(self, record: OutboxRecord) -> None:
         issue_number = self._issue_number(record)
         if record.stream is Stream.TASK_SNAPSHOT:
+            snapshot_body = self._snapshot_body(record.payload)
+            if self._conn is not None:
+                issue = self._request("GET", self._issue_path(issue_number))
+                remote_body = str(issue.get("body", "")) if isinstance(issue, dict) else ""
+                check_mirror_consistency(
+                    self._conn,
+                    task_id=record.task_id,
+                    remote_body=remote_body,
+                    expected_body=snapshot_body,
+                )
             self._request(
                 "PATCH",
                 self._issue_path(issue_number),
-                json={"body": self._snapshot_body(record.payload)},
+                json={"body": snapshot_body},
             )
             return
         if record.stream is Stream.TASK_COMMENT:

@@ -10,10 +10,11 @@ from click.testing import CliRunner
 
 from task_relay.cli import cli
 from task_relay.db.connection import connect
+from task_relay.db.queries import insert_outbox, upsert_task_on_create
 from task_relay.ingress.forgejo_webhook import canonicalize
 from task_relay.journal.reader import JournalReader
 from task_relay.journal.writer import JournalWriter
-from task_relay.types import CanonicalEvent, TaskState
+from task_relay.types import CanonicalEvent, Stream, TaskState
 
 from tests.unit._test_helpers import insert_plan_row, seed_task
 
@@ -160,6 +161,54 @@ def test_projection_rebuild_cli_echoes_rebuilt_row_count(cli_env: dict[str, Path
     assert result.exit_code == 0
     assert "Rebuilt " in result.output
     assert "outbox rows for task-cli-rebuild" in result.output
+
+
+def test_projection_cli_dry_run_once_processes_outbox(cli_env: dict[str, Path | str]) -> None:
+    runner = CliRunner()
+    migrate_result = runner.invoke(cli, ["migrate"])
+    assert migrate_result.exit_code == 0
+
+    conn = connect(Path(cli_env["sqlite_path"]))
+    try:
+        now = datetime(2026, 4, 16, 0, 0, tzinfo=timezone.utc)
+        upsert_task_on_create(
+            conn,
+            task_id="task-cli-projection",
+            source_issue_id="42",
+            requested_by="discord:42",
+            notification_target="42",
+            created_at=now,
+            updated_at=now,
+        )
+        outbox_id = insert_outbox(
+            conn,
+            task_id="task-cli-projection",
+            stream=Stream.TASK_COMMENT,
+            target="42",
+            origin_event_id="event-1",
+            payload_json=json.dumps({"body": "hello", "issue_number": 42}),
+            state_rev=1,
+            idempotency_key="cli-projection-idem",
+            next_attempt_at=now.isoformat(),
+        )
+    finally:
+        conn.close()
+
+    result = runner.invoke(cli, ["projection", "--dry-run", "--once"])
+
+    conn = connect(Path(cli_env["sqlite_path"]))
+    try:
+        row = conn.execute(
+            "SELECT sent_at FROM projection_outbox WHERE outbox_id = ?",
+            (outbox_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "1"
+    assert row is not None
+    assert row["sent_at"] is not None
 
 
 def test_retention_cli_json_outputs_dict(cli_env: dict[str, Path | str]) -> None:

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from datetime import datetime, timezone
 
 import httpx
 
+from task_relay.db.connection import connect
+from task_relay.db.migrations import apply_schema
 from task_relay.projection.forgejo_sink import ForgejoSink
-from task_relay.types import OutboxRecord, Stream
+from task_relay.types import OutboxRecord, Severity, Stream, SystemEventType
 
 
 def test_send_task_snapshot_patches_frontmatter() -> None:
@@ -39,6 +43,62 @@ def test_send_task_snapshot_patches_frontmatter() -> None:
             '{"body":"---\\nstate: planning\\nstate_rev: 3\\nplan_rev: 1\\ncritical: false\\ntask_url: https://forgejo.local/issues/42\\n---"}',
         )
     ]
+
+
+def test_send_task_snapshot_checks_mirror_and_still_overwrites(tmp_path) -> None:
+    calls: list[tuple[str, str, object]] = []
+    conn = connect(tmp_path / "state.sqlite")
+    apply_schema(conn)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path, request.content.decode("utf-8")))
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={"body": "---\nstate: done\nstate_rev: 3\n---\n\nRemote body"},
+            )
+        return httpx.Response(200, json={"ok": True})
+
+    sink = _sink(handler, conn=conn)
+
+    try:
+        sink.send(
+            _record(
+                stream=Stream.TASK_SNAPSHOT,
+                target="42",
+                payload={
+                    "source_issue_id": "42",
+                    "state": "planning",
+                    "state_rev": 3,
+                    "plan_rev": 1,
+                    "critical": False,
+                    "task_url": "https://forgejo.local/issues/42",
+                },
+            )
+        )
+    finally:
+        row = conn.execute(
+            """
+            SELECT event_type, severity, payload_json
+            FROM system_events
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        conn.close()
+
+    assert calls == [
+        ("GET", "/api/v1/repos/org/repo/issues/42", ""),
+        (
+            "PATCH",
+            "/api/v1/repos/org/repo/issues/42",
+            '{"body":"---\\nstate: planning\\nstate_rev: 3\\nplan_rev: 1\\ncritical: false\\ntask_url: https://forgejo.local/issues/42\\n---"}',
+        ),
+    ]
+    assert row is not None
+    assert row["event_type"] == SystemEventType.MIRROR_READONLY_VIOLATION_DETECTED.value
+    assert row["severity"] == Severity.WARNING.value
+    assert json.loads(str(row["payload_json"]))["changed_fields"] == ["critical", "plan_rev", "state", "task_url"]
 
 
 def test_send_task_comment_posts_audit_body_with_marker() -> None:
@@ -131,7 +191,7 @@ def test_send_task_comment_skips_post_when_marker_already_exists() -> None:
     assert calls == [("GET", "/api/v1/repos/org/repo/issues/42/comments", "")]
 
 
-def _sink(handler) -> ForgejoSink:
+def _sink(handler, conn: sqlite3.Connection | None = None) -> ForgejoSink:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(
         base_url="http://forgejo.local",
@@ -144,6 +204,7 @@ def _sink(handler) -> ForgejoSink:
         token="token",
         owner="org",
         repo="repo",
+        conn=conn,
         client=client,
     )
 

@@ -25,6 +25,8 @@ from .journal.reader import JournalReader
 from .journal.writer import JournalWriter
 from .logging_conf import setup_logging
 from .projection import LoggingSink
+from .projection.discord_sink import DiscordSink
+from .projection.forgejo_sink import ForgejoSink
 from .projection.rebuild import rebuild_for_task
 from .projection.worker import ProjectionWorker
 from .rate.windows import should_stop_new_tasks
@@ -253,16 +255,28 @@ def runner(settings: Settings) -> None:
 @click.option("--worker-id", default="cli", show_default=True)
 @click.option("--once", is_flag=True, default=False)
 @click.option("--interval", default=0.5, type=float, show_default=True)
+@click.option("--dry-run", is_flag=True, default=False)
 @click.pass_obj
-def projection(settings: Settings, worker_id: str, once: bool, interval: float) -> None:
+def projection(settings: Settings, worker_id: str, once: bool, interval: float, dry_run: bool) -> None:
     conn = _open_conn(settings)
     _warm_circuit_breaker(conn, conn_factory=lambda: _open_conn(settings))
-    sinks = {
-        Stream.TASK_SNAPSHOT: LoggingSink(),
-        Stream.TASK_COMMENT: LoggingSink(),
-        Stream.TASK_LABEL_SYNC: LoggingSink(),
-        Stream.DISCORD_ALERT: LoggingSink(),
-    }
+    if dry_run:
+        sinks = {stream: LoggingSink() for stream in Stream}
+    else:
+        forgejo_sink = ForgejoSink(
+            base_url=settings.forgejo_base_url,
+            token=settings.forgejo_token.get_secret_value(),
+            owner=settings.forgejo_owner,
+            repo=settings.forgejo_repo,
+            conn=conn,
+        )
+        discord_sink = DiscordSink(admin_user_ids=settings.admin_user_ids)
+        sinks = {
+            Stream.TASK_SNAPSHOT: forgejo_sink,
+            Stream.TASK_COMMENT: forgejo_sink,
+            Stream.TASK_LABEL_SYNC: forgejo_sink,
+            Stream.DISCORD_ALERT: discord_sink,
+        }
     worker = ProjectionWorker(conn, sinks, settings, worker_id=worker_id)
     try:
         if once:
