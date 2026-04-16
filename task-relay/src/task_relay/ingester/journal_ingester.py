@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections.abc import Callable
+from datetime import timezone
 from importlib import import_module
 
 from task_relay.clock import Clock, SystemClock
@@ -25,6 +26,13 @@ class JournalIngester:
         queries = import_module("task_relay.db.queries")
         conn = self._conn_factory()
         try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO journal_ingester_state(singleton_id, last_file, last_offset, updated_at)
+                VALUES (1, NULL, 0, ?)
+                """,
+                (self._clock.now().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),),
+            )
             last_file, last_offset = queries.get_ingester_state(conn)
             position = None if last_file is None else JournalPosition(file=last_file, offset=last_offset)
             count = 0

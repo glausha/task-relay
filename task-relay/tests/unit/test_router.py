@@ -6,7 +6,7 @@ from task_relay.config import Settings
 from task_relay.db import queries
 from task_relay.ids import new_task_id_from_event
 from task_relay.router.router import Router
-from task_relay.types import InboxEvent, Source, Task, TaskState
+from task_relay.types import BranchWaiterStatus, InboxEvent, Source, Task, TaskState
 
 from tests.unit._test_helpers import insert_plan_row, seed_task
 
@@ -267,3 +267,67 @@ def test_cancel_wildcard_cancels_non_done_task(sqlite_conn) -> None:
     assert result.to_state is TaskState.CANCELLED
     assert updated is not None
     assert updated.state is TaskState.CANCELLED
+
+
+def test_unlock_without_task_id_requeues_branch_head_waiter(sqlite_conn) -> None:
+    router = Router(Settings())
+    created_at = datetime(2026, 4, 15, 0, 0, tzinfo=timezone.utc)
+    _seed_task(sqlite_conn, "task-unlock-head", state=TaskState.PLAN_APPROVED)
+    _seed_task(sqlite_conn, "task-unlock-next", state=TaskState.PLAN_APPROVED)
+    sqlite_conn.execute(
+        "INSERT INTO branch_waiters(branch, task_id, queue_order, status) VALUES (?, ?, ?, ?)",
+        ("main", "task-unlock-head", 1, BranchWaiterStatus.LEASED.value),
+    )
+    sqlite_conn.execute(
+        "INSERT INTO branch_waiters(branch, task_id, queue_order, status) VALUES (?, ?, ?, ?)",
+        ("main", "task-unlock-next", 2, BranchWaiterStatus.QUEUED.value),
+    )
+    event = InboxEvent(
+        event_id="evt-unlock",
+        source=Source.CLI,
+        delivery_id="delivery-evt-unlock",
+        event_type="/unlock",
+        payload={"task_id": None, "actor": "admin", "branch": "main"},
+        journal_offset=0,
+        received_at=created_at,
+    )
+    queries.insert_event(sqlite_conn, event)
+
+    result = router.run_once(sqlite_conn, event)
+
+    row = sqlite_conn.execute(
+        "SELECT status FROM branch_waiters WHERE branch = ? AND task_id = ?",
+        ("main", "task-unlock-head"),
+    ).fetchone()
+    processed = sqlite_conn.execute(
+        "SELECT processed_at FROM event_inbox WHERE event_id = ?",
+        (event.event_id,),
+    ).fetchone()
+    assert result.skipped is False
+    assert result.task_id == "task-unlock-head"
+    assert row is not None
+    assert row["status"] == BranchWaiterStatus.QUEUED.value
+    assert processed is not None
+    assert processed["processed_at"] is not None
+
+
+def test_retry_system_without_task_id_is_processed(sqlite_conn) -> None:
+    router = Router(Settings())
+    event = _event(
+        event_id="evt-retry-system",
+        event_type="/retry-system",
+        payload={"task_id": None, "actor": "admin", "stage": "executor"},
+        source=Source.CLI,
+    )
+    queries.insert_event(sqlite_conn, event)
+
+    result = router.run_once(sqlite_conn, event)
+
+    processed = sqlite_conn.execute(
+        "SELECT processed_at FROM event_inbox WHERE event_id = ?",
+        (event.event_id,),
+    ).fetchone()
+    assert result.skipped is False
+    assert result.task_id is None
+    assert processed is not None
+    assert processed["processed_at"] is not None

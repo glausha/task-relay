@@ -118,6 +118,14 @@ class RedisLease:
         )
         return released == 1
 
+    def force_release(self, branch: str) -> bool:
+        key = self._key(branch)
+        current_value = self._client.get(key)
+        if current_value is None:
+            return False
+        self._client.delete(key)
+        return True
+
     def assert_readonly(self, branch: str, task_id: str, fencing_token: int) -> bool:
         result = self._eval_script(
             "assert",

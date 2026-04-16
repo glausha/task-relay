@@ -8,13 +8,14 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import fakeredis
+import pytest
 
 from task_relay.branch_lease.redis_lease import RedisLease
 from task_relay.clock import FrozenClock
 from task_relay.config import Settings
 from task_relay.db.connection import connect
 from task_relay.db.queries import get_task
-from task_relay.errors import TimeoutTransportError
+from task_relay.errors import LeaseError, TimeoutTransportError
 from task_relay.journal.writer import JournalWriter
 from task_relay.runner.adapters.planner import PlannerAdapter
 from task_relay.runner.adapters.reviewer import ReviewerAdapter
@@ -195,6 +196,7 @@ def test_run_executor_records_tool_call(
         settings=settings,
         repo_root=git_repo,
         lease_handle=lease_handle,
+        fencing_token=7,
         clock=FrozenClock(now),
     )
     runner.setup_worktree(lease_branch="main")
@@ -219,6 +221,43 @@ def test_run_executor_records_tool_call(
     assert row["success"] == 1
     assert row["exit_code"] == 0
     assert row["failure_code"] is None
+    task = get_task(sqlite_conn, "task-exec")
+    assert task is not None
+    assert task.last_known_head_commit is not None
+
+
+def test_run_executor_raises_lease_error_before_spawning_subprocess(
+    sqlite_conn: sqlite3.Connection,
+    git_repo: Path,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+    seed_task(
+        sqlite_conn,
+        task_id="task-stale-lease",
+        created_at=now,
+        state=TaskState.IMPLEMENTING,
+        lease_branch="main",
+    )
+    redis_lease = Mock(unsafe=True)
+    redis_lease.assert_readonly.return_value = False
+    runner = ToolRunner(
+        "task-stale-lease",
+        _conn_factory(sqlite_conn),
+        JournalWriter(tmp_path / "journal", FrozenClock(now)),
+        redis_client=object(),
+        settings=Settings(log_dir=tmp_path / "logs", executor_workspace_root=tmp_path / "workspaces"),
+        repo_root=git_repo,
+        redis_lease=redis_lease,
+        fencing_token=9,
+        clock=FrozenClock(now),
+    )
+    runner.setup_worktree(lease_branch="main")
+
+    with pytest.raises(LeaseError, match="Lease lost for branch=main task=task-stale-lease token=9"):
+        runner.run_executor({"allowed_files": ["src/task_relay/**"], "auto_allowed_patterns": ["tests/**"]})
+
+    redis_lease.assert_readonly.assert_called_once_with("main", "task-stale-lease", 9)
 
 
 def test_run_review_records_tool_call(
@@ -285,6 +324,73 @@ def test_run_review_records_tool_call(
     assert row["success"] == 1
     assert row["tokens_in"] == 3
     assert row["tokens_out"] == 5
+
+
+def test_run_review_pushes_feature_branch_on_pass(
+    sqlite_conn: sqlite3.Connection,
+    git_repo: Path,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+    remote_repo = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(remote_repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(git_repo), "remote", "add", "origin", str(remote_repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(git_repo), "push", "-u", "origin", "main"], check=True, capture_output=True)
+    seed_task(
+        sqlite_conn,
+        task_id="task-review-push",
+        created_at=now,
+        state=TaskState.REVIEWING,
+        lease_branch="main",
+    )
+    reviewer = ReviewerAdapter(
+        FakeTransport(
+            [
+                {
+                    "payload": {
+                        "decision": "pass",
+                        "criteria": [],
+                        "policy_breaches": [],
+                        "extra_files": [],
+                    }
+                }
+            ]
+        )
+    )
+    runner = ToolRunner(
+        "task-review-push",
+        _conn_factory(sqlite_conn),
+        JournalWriter(tmp_path / "journal", FrozenClock(now)),
+        redis_client=object(),
+        settings=Settings(log_dir=tmp_path / "logs", executor_workspace_root=tmp_path / "workspaces"),
+        repo_root=git_repo,
+        reviewer=reviewer,
+        clock=FrozenClock(now),
+    )
+    feature_branch, _ = runner.setup_worktree(lease_branch="main")
+    plan = Plan(
+        task_id="task-review-push",
+        plan_rev=1,
+        planner_version="planner-v1",
+        plan_json=_valid_plan_json(),
+        validator_score=100,
+        validator_errors=0,
+        approved_by=None,
+        approved_at=None,
+        approved_kind=None,
+        created_at=now,
+    )
+
+    result = runner.run_review(plan, "HEAD~1..HEAD")
+
+    remote_ref = subprocess.run(
+        ["git", "--git-dir", str(remote_repo), "show-ref", "--verify", f"refs/heads/{feature_branch}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert result.ok is True
+    assert remote_ref.endswith(f"refs/heads/{feature_branch}")
 
 
 def test_cleanup_worktree_removes_worktree(

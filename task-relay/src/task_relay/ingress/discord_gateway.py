@@ -64,6 +64,7 @@ class DiscordIngress:
         try:
             return await asyncio.wait_for(asyncio.shield(result), self._ack_deadline_ms / 1000)
         except asyncio.TimeoutError as exc:
+            result.cancel()
             raise DiscordWriterTimeout("discord writer acknowledgement timed out") from exc
 
     async def handle_slash_command(
@@ -118,6 +119,8 @@ class DiscordIngress:
             try:
                 if event is None or result is None:
                     return
+                if result.cancelled():
+                    continue
                 position = self._journal_writer.append(event)
                 if not result.done():
                     result.set_result(position)
