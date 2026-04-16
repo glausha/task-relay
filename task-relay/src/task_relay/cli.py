@@ -143,6 +143,72 @@ def migrate(settings: Settings) -> None:
     click.echo(f"Schema applied: {settings.sqlite_path}")
 
 
+@cli.command("db-check")
+@click.pass_obj
+def db_check_cmd(settings: Settings) -> None:
+    """SQLite integrity check + schema apply for startup."""
+    conn = _open_conn(settings)
+    try:
+        result = conn.execute("PRAGMA integrity_check").fetchone()
+        if result is None or result[0] != "ok":
+            detail = "no result" if result is None else str(result[0])
+            raise click.ClickException(f"Integrity check failed: {detail}")
+        apply_schema(conn)
+    finally:
+        conn.close()
+    click.echo("db-check: ok")
+
+
+@cli.command("journal-replay")
+@click.pass_obj
+def journal_replay_cmd(settings: Settings) -> None:
+    """Replay journal into inbox from persisted ingester state."""
+    reader = JournalReader(settings.journal_dir)
+    ingester = JournalIngester(lambda: _open_conn(settings), reader)
+    count = 0
+    while True:
+        imported = ingester.step()
+        if imported == 0:
+            break
+        count += imported
+    click.echo(f"journal-replay: {count} events ingested")
+
+
+@cli.command("health-check")
+@click.pass_obj
+def health_check_cmd(settings: Settings) -> None:
+    """Check SQLite, Redis, and journal directory readiness."""
+    errors: list[str] = []
+    try:
+        conn = _open_conn(settings)
+        try:
+            conn.execute("SELECT 1").fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:
+        errors.append(f"sqlite: {exc}")
+
+    redis_client: Any | None = None
+    try:
+        redis_client = redis.from_url(settings.redis_url)
+        redis_client.ping()
+    except Exception as exc:
+        errors.append(f"redis: {exc}")
+    finally:
+        close = getattr(redis_client, "close", None)
+        if callable(close):
+            close()
+
+    if not settings.journal_dir.is_dir():
+        errors.append(f"journal_dir not found: {settings.journal_dir}")
+
+    if errors:
+        for error in errors:
+            click.echo(f"FAIL: {error}", err=True)
+        raise SystemExit(1)
+    click.echo("health-check: ok")
+
+
 @cli.command("ingress-forgejo")
 @click.option("--serve", is_flag=True, default=False)
 @click.option("--host", default=None)
@@ -375,20 +441,20 @@ def projection(settings: Settings, worker_id: str, once: bool, interval: float, 
 @cli.command("reconcile")
 @click.pass_obj
 def reconcile(settings: Settings) -> None:
+    from .reconcile.worker import ReconcileWorker
+
+    writer = _open_writer(settings)
     try:
-        from .reconcile.worker import ReconcileWorker
-    except ImportError as exc:
-        raise click.ClickException("reconcile worker not yet implemented (Phase 2)") from exc
-    conn = _open_conn(settings)
-    try:
-        worker = ReconcileWorker(conn)
-        run_once = getattr(worker, "run_once", None)
-        result = run_once() if callable(run_once) else worker.step()
-        click.echo(result)
-    except (AttributeError, NotImplementedError) as exc:
-        raise click.ClickException("reconcile worker not yet implemented (Phase 2)") from exc
+        worker = ReconcileWorker(
+            conn_factory=lambda: _open_conn(settings),
+            journal_writer=writer,
+            implementing_grace_seconds=settings.implementing_resume_grace_seconds,
+            heartbeat_seconds=settings.implementing_resume_heartbeat_seconds,
+        )
+        result = worker.run_once()
+        click.echo(json.dumps(result, ensure_ascii=False, sort_keys=True))
     finally:
-        conn.close()
+        writer.close()
 
 
 @cli.command("retention")

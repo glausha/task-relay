@@ -4,10 +4,12 @@ import hmac
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
 
+import task_relay.cli as cli_module
 from task_relay.cli import cli
 from task_relay.db.connection import connect
 from task_relay.db.queries import insert_outbox, upsert_task_on_create
@@ -223,3 +225,58 @@ def test_retention_cli_json_outputs_dict(cli_env: dict[str, Path | str]) -> None
     assert isinstance(payload, dict)
     assert "journal_deleted" in payload
     assert "log" in payload
+
+
+def test_db_check_reports_ok(cli_env: dict[str, Path | str]) -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["db-check"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "db-check: ok"
+
+
+def test_journal_replay_reports_zero_events_for_empty_journal(cli_env: dict[str, Path | str]) -> None:
+    runner = CliRunner()
+    db_check_result = runner.invoke(cli, ["db-check"])
+    assert db_check_result.exit_code == 0
+
+    result = runner.invoke(cli, ["journal-replay"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "journal-replay: 0 events ingested"
+
+
+def test_health_check_reports_ok(cli_env: dict[str, Path | str], monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = CliRunner()
+    Path(cli_env["journal_dir"]).mkdir(parents=True, exist_ok=True)
+
+    class _FakeRedis:
+        def ping(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            return None
+
+    def fake_from_url(url: str) -> _FakeRedis:
+        assert url == "redis://localhost:6379/0"
+        return _FakeRedis()
+
+    monkeypatch.setattr(cli_module.redis, "from_url", fake_from_url)
+
+    result = runner.invoke(cli, ["health-check"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "health-check: ok"
+
+
+def test_reconcile_outputs_json_dict(cli_env: dict[str, Path | str]) -> None:
+    runner = CliRunner()
+    db_check_result = runner.invoke(cli, ["db-check"])
+    assert db_check_result.exit_code == 0
+
+    result = runner.invoke(cli, ["reconcile"])
+
+    payload: dict[str, Any] = json.loads(result.output)
+    assert result.exit_code == 0
+    assert payload == {"degraded_aged": 0, "events_emitted": 0, "implementing_checked": 0}
