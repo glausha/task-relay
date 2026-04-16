@@ -283,15 +283,20 @@ age 秘密鍵を全管理者が失った場合、**暗号化 secret は復号不
 
 ## 11. Restore drill との連携
 
-`deploy/restore-drill.sh` は現在 secret 復元を含まない。実機運用では以下を drill に組み込むことを推奨:
+`deploy/restore-drill.sh` は **Step 0 で secrets-decrypt.sh を自動実行 (実装済)**。root 権限かつ暗号化ファイル (`deploy/secrets/task-relay.env` と `litestream.yml`) が実在する場合のみ decrypt → `/etc/task-relay/` に配置する。test/dev 環境 (非 root or 暗号化ファイル不在) では silent skip するので既存 pytest を壊さない。
 
-```bash
-# restore-drill.sh に追加 (future)
-# SQLite/journal 復元後に:
-./deploy/secrets-decrypt.sh
+これにより別ホストで restore しても secret が正しく配置され、`systemctl start task-relay.target` が env 欠落で失敗することが無い。
+
+### restore-drill.sh 実装済フロー
+
 ```
-
-これにより別ホストで restore しても secret が正しく配置される。
+Step 0: secrets-decrypt  (root + deploy/secrets/*.env|*.yml 実在時のみ、force 上書き)
+Step 1: db-check
+Step 2: journal-replay
+Step 3: reconcile
+Step 4: health-check
+Step 5: success criteria (max_lag_seconds 判定)
+```
 
 ---
 

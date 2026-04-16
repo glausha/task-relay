@@ -35,11 +35,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "=== Step 0: secrets-decrypt ==="
 # basic-design §9.3 / docs/guides/secret-management.md §11: restore 時に secret を復元
-# root 権限かつ deploy/secrets/ が存在する場合のみ実行 (test/dev 環境では skip)
-if [[ -x "${SCRIPT_DIR}/secrets-decrypt.sh" && "${EUID}" -eq 0 && -d "${SCRIPT_DIR}/secrets" ]]; then
+# root 権限かつ暗号化済 secret ファイルが実在する場合のみ実行 (test/dev 環境では skip)
+# WHY: -d dir check だと空ディレクトリで silent pass し systemd 起動で env 欠落するため、実ファイルで判定
+if [[ -x "${SCRIPT_DIR}/secrets-decrypt.sh" && "${EUID}" -eq 0 \
+    && -f "${SCRIPT_DIR}/secrets/task-relay.env" \
+    && -f "${SCRIPT_DIR}/secrets/litestream.yml" ]]; then
     "${SCRIPT_DIR}/secrets-decrypt.sh" --force
 else
-    echo "restore-drill: secrets-decrypt skipped (non-root, or deploy/secrets/ missing)" >&2
+    echo "restore-drill: secrets-decrypt skipped (non-root, or deploy/secrets/*.env|*.yml missing)" >&2
 fi
 
 echo "=== Step 1: db-check ==="
