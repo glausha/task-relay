@@ -1,0 +1,14 @@
+[Unit]
+Description=task-relay journal ingester
+After=task-relay-journal-replay.service
+Requires=task-relay-journal-replay.service
+
+[Service]
+Type=simple
+User=task-relay
+EnvironmentFile=/etc/task-relay/task-relay.env
+WorkingDirectory=/var/lib/task-relay
+ExecStart=/usr/local/bin/task-relay ingester
+Restart=on-failure
+RestartSec=5s
+

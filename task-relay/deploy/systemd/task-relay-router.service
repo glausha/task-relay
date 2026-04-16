@@ -1,0 +1,14 @@
+[Unit]
+Description=task-relay router
+After=task-relay-reconcile.service
+Requires=task-relay-reconcile.service
+
+[Service]
+Type=simple
+User=task-relay
+EnvironmentFile=/etc/task-relay/task-relay.env
+WorkingDirectory=/var/lib/task-relay
+ExecStart=/usr/local/bin/task-relay router
+Restart=on-failure
+RestartSec=5s
+

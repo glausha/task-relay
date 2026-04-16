@@ -1,0 +1,12 @@
+[Unit]
+Description=task-relay startup journal replay
+After=task-relay-db-check.service
+Requires=task-relay-db-check.service
+
+[Service]
+Type=oneshot
+User=task-relay
+EnvironmentFile=/etc/task-relay/task-relay.env
+WorkingDirectory=/var/lib/task-relay
+ExecStart=/usr/local/bin/task-relay journal-replay
+

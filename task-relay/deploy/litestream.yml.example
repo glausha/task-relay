@@ -1,0 +1,16 @@
+# task-relay Litestream config
+# detailed-design §13.1: 別ホスト MinIO + オフサイト二重化
+dbs:
+  - path: /var/lib/task-relay/state.sqlite
+    replicas:
+      - type: s3
+        endpoint: https://minio.example.internal:9000
+        bucket: task-relay-wal
+        path: state
+        access-key-id: CHANGE_ME
+        secret-access-key: CHANGE_ME
+        sync-interval: 10s
+        snapshot-interval: 24h
+        retention: 7d
+      # offsite hop (MinIO -> S3-compatible replication or rclone sync via cron)
+

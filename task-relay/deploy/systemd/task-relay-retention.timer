@@ -1,0 +1,10 @@
+[Unit]
+Description=Run task-relay retention daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+Unit=task-relay-retention.service
+
+[Install]
+WantedBy=timers.target

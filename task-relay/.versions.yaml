@@ -1,0 +1,7 @@
+schema_version: 3
+planner_contract: "v1"
+executor_contract: "v1"
+reviewer_contract: "v1"
+executor_child_protocol: "v1"
+basic_design: "v1.0"
+detailed_design: "v1.0"

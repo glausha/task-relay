@@ -1,0 +1,14 @@
+[Unit]
+Description=task-relay Discord bot
+After=task-relay-router.service
+Requires=task-relay-router.service
+
+[Service]
+Type=simple
+User=task-relay
+EnvironmentFile=/etc/task-relay/task-relay.env
+WorkingDirectory=/var/lib/task-relay
+ExecStart=/usr/local/bin/task-relay ingress-discord
+Restart=on-failure
+RestartSec=5s
+
