@@ -7,6 +7,7 @@ from importlib import import_module
 from task_relay.clock import Clock, SystemClock
 from task_relay.config import Settings
 from task_relay.ids import new_task_id_from_event
+from task_relay.router import transitions
 from task_relay.router.guards import GuardContext
 from task_relay.router.state_machine import TRANSITIONS, TransitionKey
 from task_relay.types import InboxEvent, Source, Task, TaskState
@@ -32,6 +33,8 @@ class Router:
         queries = import_module("task_relay.db.queries")
         conn.execute("BEGIN IMMEDIATE")
         try:
+            if event.event_type in {"/unlock", "/retry-system"} and event.payload.get("task_id") is None:
+                return self._handle_system_admin_event(conn, event)
             task = None
             task_id = event.payload.get("task_id")
             if task_id is not None:
@@ -109,6 +112,25 @@ class Router:
         except Exception:
             conn.execute("ROLLBACK")
             raise
+
+    def _handle_system_admin_event(self, conn: sqlite3.Connection, event: InboxEvent) -> RouterResult:
+        queries = import_module("task_relay.db.queries")
+        task_id = None
+        if event.event_type == "/unlock":
+            branch = event.payload.get("branch")
+            if branch is not None:
+                task_id = transitions.requeue_branch_head_waiter(conn, str(branch))
+        queries.mark_processed(conn, event.event_id, event.received_at)
+        conn.execute("COMMIT")
+        return RouterResult(
+            event_id=event.event_id,
+            task_id=task_id,
+            from_state=None,
+            to_state=None,
+            outbox_ids=[],
+            skipped=False,
+            skip_reason=None,
+        )
 
     def _create_new_task(self, conn: sqlite3.Connection, event: InboxEvent) -> Task:
         queries = import_module("task_relay.db.queries")

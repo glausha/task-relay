@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import timedelta
 from importlib import import_module
 
 from task_relay.projection.labels import MANAGED_LABELS
 from task_relay.router.guards import GuardContext, resume_grace_ok
 from task_relay.router.idempotency import discord_alert_key, label_sync_key, snapshot_key
-from task_relay.types import AlertKind, Severity, Stream, TaskState
+from task_relay.types import AlertKind, BranchWaiterStatus, Severity, Stream, TaskState
 
 _UNSET = object()
 _ADMIN_USER_IDS_SENTINEL = "admin_user_ids"
@@ -15,6 +16,38 @@ _ADMIN_USER_IDS_SENTINEL = "admin_user_ids"
 
 def _queries():
     return import_module("task_relay.db.queries")
+
+
+def requeue_branch_head_waiter(conn: sqlite3.Connection, branch: str) -> str | None:
+    row = conn.execute(
+        """
+        SELECT task_id, status
+        FROM branch_waiters
+        WHERE branch = ?
+          AND status IN (?, ?)
+        ORDER BY queue_order ASC
+        LIMIT 1
+        """,
+        (
+            branch,
+            BranchWaiterStatus.LEASED.value,
+            BranchWaiterStatus.QUEUED.value,
+        ),
+    ).fetchone()
+    if row is None:
+        return None
+    task_id = str(row["task_id"])
+    if str(row["status"]) == BranchWaiterStatus.LEASED.value:
+        # WHY: admin unlock must make the oldest waiter dispatchable again without rewinding tokens.
+        conn.execute(
+            """
+            UPDATE branch_waiters
+            SET status = ?
+            WHERE branch = ? AND task_id = ?
+            """,
+            (BranchWaiterStatus.QUEUED.value, branch, task_id),
+        )
+    return task_id
 
 
 def _issue_target(ctx: GuardContext) -> str:

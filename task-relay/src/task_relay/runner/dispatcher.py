@@ -6,7 +6,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from task_relay.branch_lease.redis_lease import LeaseHandle, RedisLease
 from task_relay.breaker.circuit_breaker import CircuitBreaker
@@ -17,8 +17,13 @@ from task_relay.errors import FAILURE_CLASS, FailureClass, FailureCode, TimeoutT
 from task_relay.ids import new_event_id
 from task_relay.journal.writer import JournalWriter
 from task_relay.runner.adapters.base import AdapterBase, AdapterOutput
+from task_relay.runner.retry_system_handler import RetrySystemHandler
 from task_relay.runner.tool_runner import ToolRunner
-from task_relay.types import BranchWaiterStatus, CanonicalEvent, Plan, Source, Task, TaskState
+from task_relay.runner.unlock_handler import UnlockHandler
+from task_relay.types import BranchWaiterStatus, CanonicalEvent, InboxEvent, Plan, Source, Task, TaskState
+
+if TYPE_CHECKING:
+    from task_relay.router.router import RouterResult
 
 
 class TaskDispatcher:
@@ -46,6 +51,14 @@ class TaskDispatcher:
             fatal_threshold=settings.breaker_fatal_threshold,
             clock=clock,
             conn_factory=conn_factory,
+        )
+        self._unlock_handler = UnlockHandler(conn_factory, self._redis_lease, journal_writer, clock=clock)
+        self._retry_system_handler = RetrySystemHandler(
+            self._breaker,
+            journal_writer,
+            conn_factory=conn_factory,
+            redis_client=redis_client,
+            clock=clock,
         )
         self._lease_handles: dict[str, LeaseHandle] = {}
         self._last_dispatched_task_id: str | None = None
@@ -124,6 +137,18 @@ class TaskDispatcher:
             if task_id is not None:
                 self.run_task(task_id)
             time.sleep(poll_interval)
+
+    def handle_router_post_apply(self, event: InboxEvent, result: RouterResult) -> None:
+        if result.skipped:
+            return
+        if event.event_type == "/unlock":
+            branch = event.payload.get("branch")
+            if branch is not None:
+                self._unlock_handler.handle_unlock(str(branch))
+            return
+        if event.event_type == "/retry-system":
+            stage = event.payload.get("stage")
+            self._retry_system_handler.handle_retry_system(None if stage is None else str(stage))
 
     def _tool_runner(self, task_id: str) -> ToolRunner:
         return ToolRunner(

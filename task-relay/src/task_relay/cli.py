@@ -60,6 +60,25 @@ def _warm_circuit_breaker(
     return breaker
 
 
+def _run_router_post_apply(
+    event,
+    result,
+    *,
+    unlock_handler,
+    retry_system_handler,
+) -> None:
+    if result.skipped:
+        return
+    if event.event_type == "/unlock":
+        branch = event.payload.get("branch")
+        if branch is not None:
+            unlock_handler.handle_unlock(str(branch))
+        return
+    if event.event_type == "/retry-system":
+        stage = event.payload.get("stage")
+        retry_system_handler.handle_retry_system(None if stage is None else str(stage))
+
+
 def _append_cli_command(
     settings: Settings,
     *,
@@ -219,16 +238,38 @@ def ingester(settings: Settings, once: bool, interval: float) -> None:
 @click.option("--interval", default=0.5, type=float, show_default=True)
 @click.pass_obj
 def router(settings: Settings, once: bool, interval: float) -> None:
-    conn = _open_conn(settings)
-    _warm_circuit_breaker(conn, conn_factory=lambda: _open_conn(settings))
+    from .branch_lease.redis_lease import RedisLease
+    from .runner.retry_system_handler import RetrySystemHandler
+    from .runner.unlock_handler import UnlockHandler
+
+    def conn_factory() -> sqlite3.Connection:
+        return _open_conn(settings)
+
+    conn = conn_factory()
+    breaker = _warm_circuit_breaker(conn, conn_factory=conn_factory)
     worker = Router(settings)
+    writer = _open_writer(settings)
+    redis_client = redis.from_url(settings.redis_url, decode_responses=True)
+    unlock_handler = UnlockHandler(conn_factory, RedisLease(redis_client, settings), writer)
+    retry_system_handler = RetrySystemHandler(
+        breaker,
+        writer,
+        conn_factory=conn_factory,
+        redis_client=redis_client,
+    )
     try:
         if once:
             event = queries.fetch_next_unprocessed(conn)
             if event is None:
                 click.echo(0)
                 return
-            worker.run_once(conn, event)
+            result = worker.run_once(conn, event)
+            _run_router_post_apply(
+                event,
+                result,
+                unlock_handler=unlock_handler,
+                retry_system_handler=retry_system_handler,
+            )
             click.echo(1)
             return
         while True:
@@ -236,8 +277,18 @@ def router(settings: Settings, once: bool, interval: float) -> None:
             if event is None:
                 time.sleep(interval)
                 continue
-            worker.run_once(conn, event)
+            result = worker.run_once(conn, event)
+            _run_router_post_apply(
+                event,
+                result,
+                unlock_handler=unlock_handler,
+                retry_system_handler=retry_system_handler,
+            )
     finally:
+        writer.close()
+        close = getattr(redis_client, "close", None)
+        if callable(close):
+            close()
         conn.close()
 
 
