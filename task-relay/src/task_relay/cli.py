@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import click
+import redis
 from aiohttp import web
 
 from .breaker.circuit_breaker import CircuitBreaker
@@ -241,14 +242,45 @@ def router(settings: Settings, once: bool, interval: float) -> None:
 
 
 @cli.command("runner")
-@click.pass_obj
-def runner(settings: Settings) -> None:
-    conn = _open_conn(settings)
+@click.option("--once", is_flag=True, default=False)
+@click.option("--task-id", default=None)
+@click.pass_context
+def runner_cmd(ctx: click.Context, once: bool, task_id: str | None) -> None:
+    settings = ctx.obj
+    from .runner.adapters.base import AdapterTransport
+    from .runner.adapters.planner import PlannerAdapter
+    from .runner.adapters.reviewer import ReviewerAdapter
+    from .runner.dispatcher import TaskDispatcher
+
+    class StubTransport(AdapterTransport):
+        def request(self, *, request_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+            raise NotImplementedError("Phase 3: inject real transport")
+
+    def conn_factory() -> sqlite3.Connection:
+        return _open_conn(settings)
+
+    redis_client = redis.from_url(settings.redis_url, decode_responses=True)
+    writer = _open_writer(settings)
+    planner = PlannerAdapter(StubTransport())
+    reviewer = ReviewerAdapter(StubTransport())
+    dispatcher = TaskDispatcher(
+        conn_factory=conn_factory,
+        journal_writer=writer,
+        settings=settings,
+        redis_client=redis_client,
+        planner=planner,
+        reviewer=reviewer,
+    )
     try:
-        _warm_circuit_breaker(conn, conn_factory=lambda: _open_conn(settings))
+        if task_id:
+            dispatcher.run_task(task_id)
+            return
+        if once:
+            click.echo(str(dispatcher.step()))
+            return
+        dispatcher.run_forever()
     finally:
-        conn.close()
-    click.echo("Use approve, critical, retry, cancel, unlock, or retry-system.")
+        writer.close()
 
 
 @cli.command("projection")
