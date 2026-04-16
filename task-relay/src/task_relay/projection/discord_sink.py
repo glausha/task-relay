@@ -1,58 +1,63 @@
 from __future__ import annotations
 
-from typing import Any
+import asyncio
 
-import httpx
+import discord
 
 from task_relay.types import OutboxRecord
 from task_relay.types import Stream
 
 
-ADMIN_USER_IDS_SENTINEL = "admin_user_ids"
-
-
 class DiscordSink:
+    ADMIN_USER_IDS_SENTINEL = "admin_user_ids"
+
     def __init__(
         self,
-        base_url: str = "https://discord.com/api/v10",
-        client: httpx.Client | None = None,
+        *,
+        client: discord.Client | None = None,
         admin_user_ids: list[int] | None = None,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._client = client or httpx.Client()
+        self._client = client
         self._admin_user_ids = [] if admin_user_ids is None else list(admin_user_ids)
 
     def send(self, record: OutboxRecord) -> None:
         if record.stream is not Stream.DISCORD_ALERT:
             raise ValueError(f"discord sink does not support stream={record.stream.value}")
-        content = self._build_message(record)
-        for recipient in self._resolve_recipients(record.target, self._admin_user_ids):
-            url = f"{self._base_url}/channels/{recipient}/messages"
-            self._request("POST", url, {"content": content})
+        recipients = self._resolve_recipients(record.target)
+        message = self._build_message(record)
+        for user_id in recipients:
+            self._send_dm(user_id, message)
 
-    @staticmethod
-    def _resolve_recipients(target: str, admin_user_ids: list[int]) -> list[int]:
-        if target == ADMIN_USER_IDS_SENTINEL:
-            return list(admin_user_ids)
-        return [int(target)]
+    def _resolve_recipients(self, target: str) -> list[int]:
+        if target == self.ADMIN_USER_IDS_SENTINEL:
+            return list(self._admin_user_ids)
+        try:
+            return [int(target)]
+        except ValueError:
+            return list(self._admin_user_ids)
 
     def _build_message(self, record: OutboxRecord) -> str:
         payload = record.payload
-        kind = str(payload.get("kind", "alert"))
-        state = str(payload.get("state", "unknown"))
-        task_id = str(payload.get("task_id", record.task_id))
-        task_url = payload.get("task_url")
-        lines = [
-            f"[task-relay] {kind}",
-            f"Task: {task_id}",
-            f"State: {state}",
+        parts = [
+            f"**{payload.get('kind', 'alert')}** - task `{record.task_id}`",
+            f"state: `{payload.get('state', '?')}`",
         ]
-        if task_url is not None:
-            lines.append(f"URL: {task_url}")
-        lines.append("")
-        lines.append(f"relay_idempotency_key={record.idempotency_key}")
-        return "\n".join(lines)
+        if task_url := payload.get("task_url"):
+            parts.append(f"<{task_url}>")
+        parts.append(f"`relay_idempotency_key={record.idempotency_key}`")
+        return "\n".join(parts)
 
-    def _request(self, method: str, url: str, json: dict[str, Any]) -> dict[str, Any]:
-        _ = (self._client, method, url, json)
-        raise NotImplementedError("Phase 2 integration")
+    def _send_dm(self, user_id: int, message: str) -> None:
+        if self._client is None:
+            raise NotImplementedError("Phase 3: discord client not injected")
+        asyncio.run(self._async_send_dm(user_id, message))
+
+    async def _async_send_dm(self, user_id: int, message: str) -> None:
+        if self._client is None:
+            raise NotImplementedError("Phase 3: discord client not injected")
+        user = await self._client.fetch_user(user_id)
+        dm = await user.create_dm()
+        await dm.send(message)
+
+
+ADMIN_USER_IDS_SENTINEL = DiscordSink.ADMIN_USER_IDS_SENTINEL

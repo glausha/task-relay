@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 from datetime import datetime, timezone
+from pathlib import Path
 
 from task_relay.clock import FrozenClock
+from task_relay.ingress.discord_gateway import DiscordIngress
 from task_relay.ingress.cli_source import build_cli_event, is_authorized
 from task_relay.ingress.forgejo_webhook import canonicalize, verify_signature
+from task_relay.journal.writer import JournalWriter
 from task_relay.types import Source
 
 
@@ -83,3 +87,26 @@ def test_is_authorized_rejects_non_admin_non_owner() -> None:
 
 def test_is_authorized_rejects_unlock_for_non_admin() -> None:
     assert is_authorized("/unlock", 42, "discord:42", [7]) is False
+
+
+async def test_handle_slash_command_accepts_async_get_requested_by(tmp_path: Path) -> None:
+    writer = JournalWriter(tmp_path / "journal")
+    ingress = DiscordIngress(writer)
+
+    async def get_requested_by(task_id: str) -> str | None:
+        await asyncio.sleep(0)
+        return f"discord:{task_id.removeprefix('task-')}"
+
+    message, request_id = await ingress.handle_slash_command(
+        command="/approve",
+        user_id=42,
+        task_id="task-42",
+        extra_payload=None,
+        admin_user_ids=[7],
+        get_requested_by=get_requested_by,
+    )
+
+    assert message.startswith("Accepted. request_id=")
+    assert request_id is not None
+    await ingress.stop()
+    writer.close()

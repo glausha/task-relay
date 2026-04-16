@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from task_relay import ids
 from task_relay.clock import Clock, SystemClock
@@ -73,10 +74,15 @@ class DiscordIngress:
         task_id: str | None,
         extra_payload: dict[str, Any] | None,
         admin_user_ids: list[int],
-        get_requested_by: Callable[[str], str | None],
+        get_requested_by: Callable[[str], str | None | Awaitable[str | None]],
     ) -> tuple[str, str | None]:
         request_id = ids.new_request_id()
-        requested_by = get_requested_by(task_id) if task_id is not None else None
+        requested_by = None
+        if task_id is not None:
+            requested_by_result = get_requested_by(task_id)
+            requested_by = (
+                await requested_by_result if inspect.isawaitable(requested_by_result) else requested_by_result
+            )
         if not is_authorized(command, user_id, requested_by, admin_user_ids):
             return (f"Unauthorized. request_id={request_id}", request_id)
         event = build_cli_event(

@@ -2,16 +2,25 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from task_relay.projection.discord_sink import DiscordSink
 from task_relay.types import OutboxRecord, Stream
 
 
 def test_resolve_recipients_expands_admin_sentinel() -> None:
-    assert DiscordSink._resolve_recipients("admin_user_ids", [1, 2]) == [1, 2]
+    sink = DiscordSink(admin_user_ids=[1, 2])
+    assert sink._resolve_recipients("admin_user_ids") == [1, 2]
 
 
 def test_resolve_recipients_keeps_direct_target() -> None:
-    assert DiscordSink._resolve_recipients("42", [1, 2]) == [42]
+    sink = DiscordSink(admin_user_ids=[1, 2])
+    assert sink._resolve_recipients("42") == [42]
+
+
+def test_resolve_recipients_falls_back_to_admins_for_invalid_target() -> None:
+    sink = DiscordSink(admin_user_ids=[1, 2])
+    assert sink._resolve_recipients("not-a-user-id") == [1, 2]
 
 
 def test_build_message_includes_footer() -> None:
@@ -38,4 +47,26 @@ def test_build_message_includes_footer() -> None:
     message = sink._build_message(record)
 
     assert "human_review_required" in message
+    assert "state: `human_review_required`" in message
+    assert "<https://forgejo.local/issues/42>" in message
     assert "relay_idempotency_key=idem-1" in message
+
+
+def test_send_without_client_raises_not_implemented() -> None:
+    sink = DiscordSink(admin_user_ids=[1, 2])
+    record = OutboxRecord(
+        outbox_id=1,
+        task_id="task-1",
+        stream=Stream.DISCORD_ALERT,
+        target="42",
+        origin_event_id="evt-1",
+        payload={"kind": "system_degraded", "state": "system_degraded"},
+        state_rev=3,
+        idempotency_key="idem-1",
+        attempt_count=0,
+        next_attempt_at=datetime(2026, 4, 15, 0, 0, tzinfo=timezone.utc),
+        sent_at=None,
+    )
+
+    with pytest.raises(NotImplementedError, match="Phase 3: discord client not injected"):
+        sink.send(record)

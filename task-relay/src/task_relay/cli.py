@@ -181,7 +181,10 @@ def ingress_discord_cmd(ctx: click.Context) -> None:
     writer = _open_writer(settings)
     ingress = DiscordIngress(writer)
     bot = TaskRelayBot(ingress=ingress, settings=settings)
-    bot.run(settings.discord_bot_token.get_secret_value())
+    try:
+        bot.run(settings.discord_bot_token.get_secret_value())
+    finally:
+        writer.close()
 
 
 @cli.command("ingester")
