@@ -1,0 +1,22 @@
+# task-relay sops configuration template
+# basic-design §9.3: secret は sops + age 暗号化
+#
+# 使い方:
+# 1. age-keygen -o ~/.config/sops/age/keys.txt で鍵ペア生成
+# 2. 公開鍵 (# public key: age1...) を以下 age: にペースト
+# 3. 本ファイルを .sops.yaml にコピー (git 管理下に置いてよい)
+# 4. docs/guides/secret-management.md §3 以降の手順で secret 暗号化
+#
+# 詳細: task-relay/docs/guides/secret-management.md
+
+creation_rules:
+  - path_regex: ^task-relay/deploy/secrets/task-relay\.env$
+    age: |
+      age1abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqr
+  - path_regex: ^task-relay/deploy/secrets/litestream\.yml$
+    age: |
+      age1abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqr
+  # 複数管理者の場合は age: に複数の公開鍵をコンマ区切りで列挙:
+  # age: |
+  #   age1first...xyz,
+  #   age1second...uvw

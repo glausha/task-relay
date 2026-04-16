@@ -106,14 +106,66 @@ restore drill 頻度:
 - `snapshot_age_seconds <= 86400`
 - `journal_offsite_lag_seconds <= 60`
 
-## 8. 非対象
+## 8. Secret incident 復旧
+
+主要受益ペルソナ: P2, P4
+
+### 8.1 age 秘密鍵喪失
+
+全管理者が age 秘密鍵を失うと `deploy/secrets/*.env` / `*.yml` は復号不能になる。全 secret を **再発行** する。
+
+1. Discord Developer Portal で `TASK_RELAY_DISCORD_BOT_TOKEN` を Reset Token
+2. Forgejo admin UI で `TASK_RELAY_FORGEJO_TOKEN` と webhook secret を新規発行
+3. MinIO 管理画面で Litestream access/secret key を新規発行
+4. 新 age キーペアを生成 (`docs/guides/secret-management.md §2` 参照)
+5. `.sops.yaml` を新 age 公開鍵のみで再構成
+6. 新 secret を `sops encrypt` で暗号化し直し commit
+7. deploy 先 host で `git pull` → `./deploy/secrets-decrypt.sh --force` → `systemctl restart task-relay.target`
+8. 影響時間: 30-60 分、通常運用停止を伴う
+9. post-incident audit: journal / system_events から漏洩範囲を特定
+
+age 秘密鍵の紛失リスクを減らすため、各管理者は以下を実施:
+- 秘密鍵を 1Password / Bitwarden vault に backup
+- 紙 backup + 施錠保管庫 (age キーは短い ASCII)
+- 秘密鍵を GitHub / クラウドプレーン保管 **禁止**
+
+### 8.2 Token compromise (漏洩検知)
+
+Discord / Forgejo / MinIO いずれかの token が漏洩疑いを受けた場合:
+
+1. **即時 revoke** (Developer Portal / Forgejo admin UI / MinIO) — 旧 token を失効
+2. 新 token を発行 → sops edit → commit → deploy (runbook §9.3 emergency revoke 参照)
+3. `system_events` / journal を時系列で洗い出し、漏洩期間中の task / projection / DM 送信履歴を audit
+4. 影響範囲を本書 §9 incident log に記録
+5. 必要なら関連 admin の age 秘密鍵も rotation (§8.1 手順)
+
+### 8.3 incident log template
+
+本書末尾に時系列で追記する:
+
+```
+## YYYY-MM-DD secret incident
+
+- 発生時刻:
+- 対象 secret:
+- 原因:
+- revoke 時刻:
+- 新 secret 発行時刻:
+- deploy 完了時刻:
+- 影響時間 (service 停止):
+- audit 結果 (漏洩期間中の task / DM / projection 件数):
+- 再発防止策:
+```
+
+## 9. 非対象
 
 - Redis 永続バックアップ
 - Forgejo mirror からの state 復元
 - 手作業による task truth 編集
 
-## 9. 関連ドキュメント
+## 10. 関連ドキュメント
 
 - [runbook.md](runbook.md)
 - [reconcile.md](reconcile.md)
 - [failure-injection.md](failure-injection.md)
+- [../guides/secret-management.md](../guides/secret-management.md)

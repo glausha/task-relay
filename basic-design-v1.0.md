@@ -477,6 +477,8 @@ operator 向け scope への写像:
 
 - sops + age で管理し、env 注入のみ。worktree への配置を禁止する。
 - redact allowlist は log / stderr / trace / system comment など「観測用出力」に適用する。`event_inbox.payload_json` / `projection_outbox.payload_json` は真実源として保持する。
+- 暗号化対象の secret は `deploy/secrets/*.env` / `*.yml` に sops 暗号化で配置し、`deploy/secrets-decrypt.sh` により deploy 時に `/etc/task-relay/` へ 600 perms で復号配置する。
+- 実装手順の source of truth は `task-relay/docs/guides/secret-management.md`。rotation / incident 手順は `docs/reference/runbook.md §9` / `disaster-recovery.md §8` に記載。
 
 ### 9.4 情報境界
 
@@ -485,15 +487,27 @@ operator 向け scope への写像:
 - Discord に出してよい情報: `task_id`, state, 件数, Forgejo URL。
 - Discord に出してはならない情報: plan 本文、diff、log 詳細、secret、cost 明細。
 
-### 9.5 Threat model (TBD)
+### 9.5 Threat model
 
 主要受益ペルソナ: P1, P2, P3, P4
 
-本書では以下の threat boundary を後続版で詰める:
+#### Secret rotation SLA (暫定値、運用データで v1.1 調整)
 
-- Discord token 漏洩時の被害範囲
+| Secret | 頻度 | トリガ |
+|---|---|---|
+| `TASK_RELAY_DISCORD_BOT_TOKEN` | 90 日 | periodic / compromise |
+| `TASK_RELAY_FORGEJO_TOKEN` | 90 日 | periodic / compromise |
+| `TASK_RELAY_FORGEJO_WEBHOOK_SECRET` | 180 日 | periodic |
+| Litestream MinIO credentials | 180 日 | periodic / MinIO 側 rotation |
+| age 秘密鍵 | 年 1 回 + 管理者交代時 | admin 変更 |
+
+実施手順は `docs/reference/runbook.md §9.2`。compromise 検知時は **即時 revoke、後で rotate**、`disaster-recovery.md §8.2` を参照。
+
+#### 後続版で詰める (TBD)
+
+- Discord token 漏洩時の被害範囲 (DM 履歴 / slash command abuse の具体)
 - Forgejo / Redis が compromise された場合の task-relay への影響
-- secret rotation の頻度と手順
+- secret rotation の自動化 (現状は manual、P4 負担軽減のため v1.1 以降で検討)
 
 ---
 

@@ -19,4 +19,15 @@ logs/
 .env
 .env.*
 
+# 平文 secret (sops 暗号化前の作業ファイル) を絶対 commit しない
+deploy/secrets/*.env.plain
+deploy/secrets/*.yml.plain
+deploy/secrets/*.tmp
+/etc/task-relay/*
+
+# age 秘密鍵 (誤って repo に置かれた場合の最後の防御)
+*.age
+age-keys.txt
+**/keys.txt
+
 .DS_Store

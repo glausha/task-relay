@@ -54,6 +54,13 @@ install -m 0644 "${REPO_ROOT}/deploy/systemd/"*.service "${SYSTEMD_DIR}/"
 install -m 0644 "${REPO_ROOT}/deploy/systemd/"*.timer "${SYSTEMD_DIR}/"
 install -m 0644 "${REPO_ROOT}/deploy/systemd/task-relay.target" "${SYSTEMD_DIR}/task-relay.target"
 
+# basic-design §9.3: secret は sops+age 暗号化から env/litestream.yml に復号配置
+if [[ -d "${REPO_ROOT}/deploy/secrets" ]]; then
+    "${SCRIPT_DIR}/secrets-decrypt.sh"
+else
+    echo "install.sh: deploy/secrets/ not found; skip decryption (first run or secrets managed externally)" >&2
+fi
+
 systemctl daemon-reload
 systemctl enable task-relay.target
 systemctl enable task-relay-retention.timer

@@ -269,12 +269,62 @@
 - restore drill を四半期ごとに再実行できる
 - runbook を見れば、前回メモがなくても同じ判断と手順を再現できる
 
-## 9. 関連ドキュメント
+## 9. Secret rotation
+
+主要受益ペルソナ: P4
+
+### 9.1 rotation SLA (basic-design §9.5 の暫定値)
+
+| Secret | 頻度 | トリガ |
+|---|---|---|
+| `TASK_RELAY_DISCORD_BOT_TOKEN` | 90 日 | periodic / compromise |
+| `TASK_RELAY_FORGEJO_TOKEN` | 90 日 | periodic / compromise |
+| `TASK_RELAY_FORGEJO_WEBHOOK_SECRET` | 180 日 | periodic |
+| Litestream MinIO access/secret key | 180 日 | periodic / MinIO 側 rotation |
+| age 秘密鍵 | 年 1 回 + 管理者交代時 | admin 変更 |
+
+compromise を疑う場合は **先に revoke、後で rotate**。
+
+### 9.2 定期 rotation 手順 (Discord bot token 例)
+
+```bash
+# 1. Developer Portal で Reset Token → 新 token 取得
+# 2. repo checkout で sops edit
+cd /var/lib/task-relay
+sops deploy/secrets/task-relay.env
+# エディタで TASK_RELAY_DISCORD_BOT_TOKEN を更新、保存 → 自動再暗号化
+# 3. 変更を deploy 先 host に適用
+sudo ./deploy/secrets-decrypt.sh --force
+sudo systemctl restart task-relay-discord-bot.service task-relay-projection.service
+# 4. 動作確認
+task-relay status  # breaker_state / in_progress 件数を確認
+# Discord で /status 呼び出し → 応答確認
+```
+
+Downtime: Discord bot 再接続のみ、数秒。他 secret (Forgejo / Litestream) の rotation も同様のパターンで、影響を受ける service を restart する。
+
+### 9.3 Emergency revoke
+
+1. Developer Portal / Forgejo admin UI / MinIO で対象 token を **即時 revoke**
+2. 新 token で sops edit → commit → deploy
+3. OAuth2 既存 grant / refresh token もあれば revoke
+4. post-incident audit で `system_events` / journal から影響範囲を確認
+5. 記録: 時刻 / 対象 secret / 原因 / 対応時間を `docs/reference/disaster-recovery.md §secret-incident` に追記
+
+### 9.4 multi-admin 鍵管理
+
+- 新 admin 追加時: 新 age キー生成 → `.sops.yaml` の age: に公開鍵追加 → `sops updatekeys deploy/secrets/*.env deploy/secrets/*.yml` で既存 secret 再暗号化
+- admin 削除時: `.sops.yaml` から公開鍵削除 → `sops updatekeys` → 既存 secret の **値自体** も rotation (元管理者が持ち出している可能性に備える)
+
+詳細: `docs/guides/secret-management.md §8-9`
+
+## 10. 関連ドキュメント
 
 - [state-machine.md](state-machine.md)
 - [reconcile.md](reconcile.md)
 - [disaster-recovery.md](disaster-recovery.md)
 - [failure-injection.md](failure-injection.md)
+- [../guides/secret-management.md](../guides/secret-management.md)
 - [../guides/ops-cards/system-degraded.md](../guides/ops-cards/system-degraded.md)
 - [../guides/ops-cards/human-review-required.md](../guides/ops-cards/human-review-required.md)
 - [../guides/ops-cards/post-incident-audit.md](../guides/ops-cards/post-incident-audit.md)
