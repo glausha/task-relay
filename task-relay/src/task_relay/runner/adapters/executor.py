@@ -1,20 +1,39 @@
 from __future__ import annotations
 
 import fnmatch
+import time
 from collections.abc import Iterable
+from collections.abc import Callable
+from dataclasses import replace
 from functools import lru_cache
 from typing import Any
 
-from task_relay.runner.adapters.base import AdapterBase, AdapterOutput
+from task_relay.runner.adapters.base import AdapterBase, AdapterOutput, AdapterTransport
 from task_relay.types import AdapterContract
 
 
 class ExecutorAdapter(AdapterBase):
     contract = AdapterContract("executor", "v1", False)
 
-    # Why: executor timeout/oom_killed must not be retried automatically.
+    def __init__(self, transport: AdapterTransport, *, sleep: Callable[[float], None] = time.sleep) -> None:
+        super().__init__(transport=transport, _sleep=sleep)
+
     def call(self, *, request_id: str, payload: dict[str, Any]) -> AdapterOutput:
-        raise NotImplementedError("Phase 2: executor subprocess")
+        result = super().call(request_id=request_id, payload=payload)
+        if not result.ok:
+            return result
+        changed = result.payload.get("changed_files", [])
+        allowed = payload.get("allowed_files", [])
+        auto = payload.get("auto_allowed_patterns", [])
+        in_scope, out_of_scope = check_file_scope(changed, allowed, auto)
+        return replace(
+            result,
+            payload={
+                **result.payload,
+                "in_scope_files": in_scope,
+                "out_of_scope_files": out_of_scope,
+            },
+        )
 
 
 def check_file_scope(

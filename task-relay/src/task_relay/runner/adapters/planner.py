@@ -1,19 +1,33 @@
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
-from task_relay.runner.adapters.base import AdapterBase, AdapterOutput
+from task_relay.runner.adapters.base import AdapterBase, AdapterOutput, AdapterTransport
 from task_relay.types import AdapterContract
 
 
 class PlannerAdapter(AdapterBase):
     contract = AdapterContract("planner", "v1", True)
 
-    def __init__(self, *_: Any, **__: Any) -> None:
-        pass
+    def __init__(self, transport: AdapterTransport, *, sleep: Callable[[float], None] = time.sleep) -> None:
+        super().__init__(transport=transport, _sleep=sleep)
 
     def call(self, *, request_id: str, payload: dict[str, Any]) -> AdapterOutput:
-        raise NotImplementedError("Phase 2: planner LLM integration")
+        result = super().call(request_id=request_id, payload=payload)
+        if not result.ok:
+            return result
+        score, errors = validate_plan(result.payload)
+        return replace(
+            result,
+            payload={
+                **result.payload,
+                "validator_score": score,
+                "validator_errors": errors,
+            },
+        )
 
 
 def validate_plan(plan_json: dict[str, Any]) -> tuple[int, int]:

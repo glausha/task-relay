@@ -51,6 +51,36 @@ class FailureCode(str, Enum):
     SYSTEM_DEGRADED = "system_degraded"
 
 
+class TransportError(AdapterError):
+    def __init__(
+        self,
+        failure_code: FailureCode,
+        message: str | None = None,
+        *,
+        raw_text: str | None = None,
+    ) -> None:
+        super().__init__(message or failure_code.value)
+        self.failure_code = failure_code
+        self.raw_text = raw_text
+
+
+class TransientTransportError(TransportError):
+    pass
+
+
+class UnknownTransportError(TransportError):
+    pass
+
+
+class TimeoutTransportError(UnknownTransportError):
+    def __init__(self, message: str | None = None, *, raw_text: str | None = None) -> None:
+        super().__init__(FailureCode.TIMEOUT, message, raw_text=raw_text)
+
+
+class FatalTransportError(TransportError):
+    pass
+
+
 FAILURE_CLASS: dict[FailureCode, FailureClass] = {
     FailureCode.AUTH_ERROR: FailureClass.FATAL,
     FailureCode.PERMISSION_ERROR: FailureClass.FATAL,

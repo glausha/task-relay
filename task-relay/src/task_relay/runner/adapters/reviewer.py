@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
-from task_relay.runner.adapters.base import AdapterBase, AdapterOutput
+from task_relay.runner.adapters.base import AdapterBase, AdapterOutput, AdapterTransport
 from task_relay.types import AdapterContract, CriterionStatus, ReviewDecision
 
 
 class ReviewerAdapter(AdapterBase):
     contract = AdapterContract("reviewer", "v1", True)
 
+    def __init__(self, transport: AdapterTransport, *, sleep: Callable[[float], None] = time.sleep) -> None:
+        super().__init__(transport=transport, _sleep=sleep)
+
     def call(self, *, request_id: str, payload: dict[str, Any]) -> AdapterOutput:
-        raise NotImplementedError("Phase 2: reviewer LLM integration")
+        result = super().call(request_id=request_id, payload=payload)
+        if not result.ok:
+            return result
+        return replace(result, payload=summarize_review(result.payload))
 
 
 def summarize_review(review_json: dict[str, Any]) -> dict[str, Any]:
