@@ -557,6 +557,8 @@ ToolRunner 親の責務:
 
 主要受益ペルソナ: P1, P3
 
+- Planner adapter は Claude Code CLI subprocess (`claude --print --output-format json -p <instruction>`) を使い、
+  tempfile workspace 上で JSON 出力のみを受け取る。
 - `goal`
 - `sub_tasks[]`
 - `allowed_files[]`
@@ -607,6 +609,7 @@ validator_score = Σ(満たした rule の配点)
 Planner / Reviewer adapter metadata:
 
 - `supports_request_id: bool`
+- Planner は Claude Code CLI が client `request_id` を受け付けないため `supports_request_id=false`。
 
 ### 6.3 Execution 境界検査
 
@@ -706,6 +709,9 @@ Reviewer は acceptance criterion ごとに以下を返す:
   - `head_after`
   - `asserted_lease_branch`
 - 親は `protocol_version` 不一致を検出したら child を停止し、`failure_code=tool_internal_error` として扱う。
+- child は executor payload から Claude Code CLI prompt を構成し、
+  `claude --print --output-format json -p <instruction>` を `cwd=<worktree_path>` で実行する。
+- Planner も同じ Claude Code CLI transport を共有するが、Planner は tempfile workspace を使い実 repo を mutate しない。
 
 ---
 
@@ -787,7 +793,8 @@ retention worker の責務:
 
 idempotency 規則:
 
-- Planner / Reviewer adapter は provider が対応する場合、client 生成 `request_id` を header または request field に必ず送る。
+- Reviewer adapter は provider が対応する場合、client 生成 `request_id` を header または request field に必ず送る。
+- Planner adapter は Claude Code CLI subprocess を使うため `request_id` を provider へ送らない。
 - `timeout` 再試行は同一 `request_id` を継続利用できる場合に限る。
 - Execution stage は workspace / Git mutation を含むため、`timeout` / `oom_killed` の自動再試行を禁止する。
 - Execution stage の `timeout` / `oom_killed` は reconcile 後に `implementing_resume_pending` または `human_review_required` に送る。

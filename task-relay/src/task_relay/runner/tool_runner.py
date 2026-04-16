@@ -103,10 +103,16 @@ class ToolRunner:
 
     def run_planning(self, plan_input: dict[str, Any]) -> AdapterOutput:
         planner = self._require_planner()
+        request_payload = {
+            "task_goal": plan_input["goal"],
+            "repo_context": plan_input.get("repo_context", ""),
+        }
+        if "repo_summary" in plan_input:
+            request_payload["repo_summary"] = plan_input["repo_summary"]
         return self._run_in_process_stage(
             stage=Stage.PLANNING,
             tool_name=planner.contract.name,
-            request_payload=plan_input,
+            request_payload=request_payload,
             call_adapter=planner.call,
             timeout_event_type="internal.planner_timeout",
         )

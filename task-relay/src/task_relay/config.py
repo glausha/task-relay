@@ -39,8 +39,7 @@ class Settings(BaseSettings):
     implementing_resume_heartbeat_seconds: int = 60
     subprocess_sigterm_grace_seconds: int = 15
     executor_workspace_root: Path = Path("var/task-relay/worktrees")
-    planner_model: str = "claude-opus-4-6"
-    planner_max_tokens: int = 4096
+    planner_timeout_seconds: int = 60
     reviewer_model: str = "gpt-5.4"
     executor_timeout: int = 600
     lease_ttl_seconds: int = 30

@@ -34,7 +34,7 @@ def test_decide_timeout_retry_retries_planning_once_with_request_id_support() ->
 
 
 def test_decide_timeout_retry_requires_human_review_without_request_id_support() -> None:
-    contract = AdapterContract("planner", "v1", False)
+    contract = AdapterContract("planner", "v2", False)
 
     assert (
         decide_timeout_retry(stage=Stage.PLANNING, contract=contract, attempt_count=0)
@@ -111,7 +111,7 @@ def test_run_planning_records_tool_call(
         clock=FrozenClock(now),
     )
 
-    result = runner.run_planning({"task_id": "task-plan", "prompt": "make a plan"})
+    result = runner.run_planning({"goal": "make a plan", "repo_context": "task_id=task-plan"})
 
     row = sqlite_conn.execute(
         "SELECT stage, tool_name, success, failure_code, tokens_in, tokens_out FROM tool_calls"
@@ -151,13 +151,13 @@ def test_run_planning_timeout_appends_internal_event(
     )
 
     try:
-        runner.run_planning({"task_id": "task-plan-timeout"})
+        runner.run_planning({"goal": "make a plan", "repo_context": "task_id=task-plan-timeout"})
     except TimeoutTransportError:
         pass
     else:
         raise AssertionError("expected planner timeout to be raised")
 
-    assert transport.call_count == 2
+    assert transport.call_count == 1
     journal_writer.append.assert_called_once()
     event = journal_writer.append.call_args.args[0]
     assert event.event_type == "internal.planner_timeout"
@@ -300,7 +300,7 @@ def test_run_review_records_tool_call(
     plan = Plan(
         task_id="task-review",
         plan_rev=1,
-        planner_version="planner-v1",
+        planner_version="planner-v2",
         plan_json=_valid_plan_json(),
         validator_score=100,
         validator_errors=0,
@@ -371,7 +371,7 @@ def test_run_review_pushes_feature_branch_on_pass(
     plan = Plan(
         task_id="task-review-push",
         plan_rev=1,
-        planner_version="planner-v1",
+        planner_version="planner-v2",
         plan_json=_valid_plan_json(),
         validator_score=100,
         validator_errors=0,

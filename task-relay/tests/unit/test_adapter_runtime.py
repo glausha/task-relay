@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from task_relay.errors import (
@@ -19,7 +21,7 @@ def test_planner_returns_validator_score_for_valid_plan() -> None:
     transport = FakeTransport([{"payload": _valid_plan_json()}])
     adapter = PlannerAdapter(transport, sleep=_no_sleep)
 
-    result = adapter.call(request_id="req-1", payload={"prompt": "plan"})
+    result = adapter.call(request_id="req-1", payload={"task_goal": "plan"})
 
     assert result.ok is True
     assert result.failure_code is None
@@ -38,7 +40,7 @@ def test_planner_retries_transient_failures_until_success() -> None:
     )
     adapter = PlannerAdapter(transport, sleep=_no_sleep)
 
-    result = adapter.call(request_id="req-2", payload={"prompt": "plan"})
+    result = adapter.call(request_id="req-2", payload={"task_goal": "plan"})
 
     assert result.ok is True
     assert transport.call_count == 3
@@ -56,7 +58,7 @@ def test_planner_returns_failure_after_transient_retry_budget_is_spent() -> None
     )
     adapter = PlannerAdapter(transport, sleep=_no_sleep)
 
-    result = adapter.call(request_id="req-3", payload={"prompt": "plan"})
+    result = adapter.call(request_id="req-3", payload={"task_goal": "plan"})
 
     assert result.ok is False
     assert result.failure_code == FailureCode.RATE_LIMITED
@@ -70,7 +72,7 @@ def test_planner_returns_failure_immediately_for_fatal_error() -> None:
     )
     adapter = PlannerAdapter(transport, sleep=_no_sleep)
 
-    result = adapter.call(request_id="req-4", payload={"prompt": "plan"})
+    result = adapter.call(request_id="req-4", payload={"task_goal": "plan"})
 
     assert result.ok is False
     assert result.failure_code == FailureCode.AUTH_ERROR
@@ -84,7 +86,7 @@ def test_planner_retries_unknown_failure_once() -> None:
     )
     adapter = PlannerAdapter(transport, sleep=_no_sleep)
 
-    result = adapter.call(request_id="req-5", payload={"prompt": "plan"})
+    result = adapter.call(request_id="req-5", payload={"task_goal": "plan"})
 
     assert result.ok is True
     assert transport.call_count == 2
@@ -95,7 +97,7 @@ def test_planner_propagates_timeout_error() -> None:
     adapter = PlannerAdapter(transport, sleep=_no_sleep)
 
     with pytest.raises(TimeoutTransportError):
-        adapter.call(request_id="req-6", payload={"prompt": "plan"})
+        adapter.call(request_id="req-6", payload={"task_goal": "plan"})
 
 
 def test_executor_marks_changed_files_in_scope() -> None:
@@ -174,18 +176,36 @@ def test_reviewer_normalizes_review_payload() -> None:
     assert result.payload["decision"] == "pass"
 
 
-def test_planner_reuses_request_id_across_retries() -> None:
+def test_planner_omits_request_id_across_retries() -> None:
     transport = FakeTransport(
         [{}, {"payload": _valid_plan_json()}],
         errors=[TransientTransportError(FailureCode.RATE_LIMITED), None],
     )
     adapter = PlannerAdapter(transport, sleep=_no_sleep)
 
-    result = adapter.call(request_id="req-10", payload={"prompt": "plan"})
+    result = adapter.call(request_id="req-10", payload={"task_goal": "plan"})
 
     assert result.ok is True
-    assert transport.request_ids == ["req-10", "req-10"]
-    assert [payload["request_id"] for payload in transport.payloads] == ["req-10", "req-10"]
+    assert transport.request_ids == [None, None]
+    assert all("request_id" not in payload for payload in transport.payloads)
+
+
+def test_planner_uses_tempdir_and_cleans_it_up() -> None:
+    transport = FakeTransport([{"payload": _valid_plan_json()}])
+    adapter = PlannerAdapter(transport, sleep=_no_sleep)
+
+    result = adapter.call(
+        request_id="req-12",
+        payload={"task_goal": "plan", "repo_context": "src/task_relay"},
+    )
+
+    assert result.ok is True
+    assert transport.call_count == 1
+    cwd = transport.payloads[0]["cwd"]
+    assert isinstance(cwd, Path)
+    assert "instruction" in transport.payloads[0]
+    assert "output_contract" in transport.payloads[0]
+    assert not cwd.exists()
 
 
 def test_executor_omits_request_id_when_contract_does_not_support_it() -> None:

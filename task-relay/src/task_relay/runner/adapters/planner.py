@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from task_relay.runner.adapters.base import AdapterBase, AdapterOutput, AdapterTransport
@@ -10,13 +12,37 @@ from task_relay.types import AdapterContract
 
 
 class PlannerAdapter(AdapterBase):
-    contract = AdapterContract("planner", "v1", True)
+    contract = AdapterContract("planner", "v2", False)
+    PLAN_OUTPUT_CONTRACT = """Return a JSON object with this exact schema:
+{
+  "goal": "<string>",
+  "sub_tasks": ["<string>"],
+  "allowed_files": ["<glob>"],
+  "auto_allowed_patterns": ["<glob>"],
+  "acceptance_criteria": ["<string>"],
+  "forbidden_changes": ["<string>"],
+  "risk_notes": ["<string>"]
+}
+No prose, no markdown. Only JSON."""
 
     def __init__(self, transport: AdapterTransport, *, sleep: Callable[[float], None] = time.sleep) -> None:
         super().__init__(transport=transport, _sleep=sleep)
 
     def call(self, *, request_id: str, payload: dict[str, Any]) -> AdapterOutput:
-        result = super().call(request_id=request_id, payload=payload)
+        del request_id
+        instruction = _build_planner_prompt(
+            payload.get("task_goal") or payload.get("goal") or payload.get("prompt") or "",
+            payload.get("repo_context", ""),
+            payload.get("repo_summary", ""),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # WHY: Planner must not touch the real repository, so Claude runs in an isolated workspace.
+            request_payload = {
+                "instruction": instruction,
+                "cwd": Path(tmpdir),
+                "output_contract": self.PLAN_OUTPUT_CONTRACT,
+            }
+            result = super().call(request_id="", payload=request_payload)
         if not result.ok:
             return result
         score, errors = validate_plan(result.payload)
@@ -28,6 +54,28 @@ class PlannerAdapter(AdapterBase):
                 "validator_errors": errors,
             },
         )
+
+
+def _build_planner_prompt(task_goal: Any, repo_context: Any, repo_summary: Any) -> str:
+    normalized_goal = _string_or_empty(task_goal).strip()
+    if not normalized_goal:
+        normalized_goal = "Produce an implementation plan for the current task."
+    context_blocks = [
+        ("Task Goal", normalized_goal),
+        ("Repository Context", _string_or_empty(repo_context).strip() or "No repository context provided."),
+    ]
+    summary_text = _string_or_empty(repo_summary).strip()
+    if summary_text:
+        context_blocks.append(("Repository Summary", summary_text))
+    instruction_lines = [
+        "You are the planning agent for task-relay.",
+        "Produce an implementation plan that is scoped, conservative, and actionable.",
+        "Prefer narrow file scopes and concrete acceptance criteria.",
+        "",
+    ]
+    for title, body in context_blocks:
+        instruction_lines.extend([f"{title}:", body, ""])
+    return "\n".join(instruction_lines).strip()
 
 
 def validate_plan(plan_json: dict[str, Any]) -> tuple[int, int]:
@@ -107,3 +155,7 @@ def _is_non_empty_text(value: Any) -> bool:
 
 def _non_empty_list(value: Any) -> bool:
     return isinstance(value, list) and any(_is_non_empty_text(item) for item in value)
+
+
+def _string_or_empty(value: Any) -> str:
+    return value if isinstance(value, str) else ""

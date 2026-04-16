@@ -92,7 +92,7 @@ def insert_plan_row(
         (
             task_id,
             plan_rev,
-            "planner-v1",
+            "planner-v2",
             json.dumps(plan_json, separators=(",", ":"), ensure_ascii=False),
             validator_score,
             validator_errors,

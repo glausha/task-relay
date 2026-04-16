@@ -104,7 +104,7 @@ def test_run_task_planning_calls_planner_and_appends_plan_ready(sqlite_conn: sql
     assert transport.call_count == 1
     assert plan is not None
     assert plan.plan_rev == 1
-    assert plan.planner_version == "planner-v1"
+    assert plan.planner_version == "planner-v2"
     journal_writer.append.assert_called_once()
     event = journal_writer.append.call_args.args[0]
     assert event.event_type == "internal.plan_ready"

@@ -411,7 +411,7 @@ def runner_cmd(ctx: click.Context, once: bool, task_id: str | None) -> None:
     from .runner.adapters.planner import PlannerAdapter
     from .runner.adapters.reviewer import ReviewerAdapter
     from .runner.dispatcher import TaskDispatcher
-    from .runner.transports.anthropic_transport import AnthropicTransport
+    from .runner.transports.claude_code_transport import ClaudeCodeTransport
     from .runner.transports.codex_transport import CodexTransport
 
     def conn_factory() -> sqlite3.Connection:
@@ -420,10 +420,7 @@ def runner_cmd(ctx: click.Context, once: bool, task_id: str | None) -> None:
     redis_client = redis.from_url(settings.redis_url, decode_responses=True)
     writer = _open_writer(settings)
     planner = PlannerAdapter(
-        AnthropicTransport(
-            model=settings.planner_model,
-            max_tokens=settings.planner_max_tokens,
-        )
+        ClaudeCodeTransport(role="planner", timeout=settings.planner_timeout_seconds)
     )
     reviewer = ReviewerAdapter(CodexTransport(model=settings.reviewer_model))
     dispatcher = TaskDispatcher(

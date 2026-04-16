@@ -287,13 +287,17 @@ class TaskDispatcher:
         return plan
 
     def _planning_payload(self, task: Task) -> dict[str, Any]:
+        repo_context_lines = [
+            f"task_id={task.task_id}",
+            f"source_issue_id={task.source_issue_id or 'unknown'}",
+            f"requested_by={task.requested_by}",
+            f"critical={task.critical}",
+            f"lease_branch={task.lease_branch or 'default'}",
+            f"manual_gate_required={task.manual_gate_required}",
+        ]
         return {
-            "task_id": task.task_id,
-            "source_issue_id": task.source_issue_id,
-            "requested_by": task.requested_by,
-            "critical": task.critical,
-            "lease_branch": task.lease_branch,
-            "manual_gate_required": task.manual_gate_required,
+            "goal": f"Plan the implementation work for task {task.task_id}.",
+            "repo_context": "\n".join(repo_context_lines),
         }
 
     def _diff_ref(self, task: Task) -> str:
