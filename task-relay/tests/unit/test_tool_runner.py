@@ -2,19 +2,27 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
-from collections.abc import Callable
 from datetime import datetime, timezone
+from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import Mock
 
+import fakeredis
+
+from task_relay.branch_lease.redis_lease import RedisLease
 from task_relay.clock import FrozenClock
 from task_relay.config import Settings
 from task_relay.db.connection import connect
 from task_relay.db.queries import get_task
+from task_relay.errors import TimeoutTransportError
 from task_relay.journal.writer import JournalWriter
+from task_relay.runner.adapters.planner import PlannerAdapter
+from task_relay.runner.adapters.reviewer import ReviewerAdapter
 from task_relay.runner.adapters.base import TimeoutDecision
 from task_relay.runner.tool_runner import ToolRunner, decide_timeout_retry
-from task_relay.types import AdapterContract, Stage, TaskState
+from task_relay.types import AdapterContract, JournalPosition, Plan, Stage, TaskState
 
+from tests.unit._fake_transports import FakeTransport
 from tests.unit._test_helpers import seed_task
 
 
@@ -84,7 +92,202 @@ def test_observe_state_change_implementing_creates_worktree_and_updates_task(
     assert Path(task.worktree_path).is_dir()
 
 
-def test_observe_state_change_done_cleans_up_worktree(
+def test_run_planning_records_tool_call(
+    sqlite_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+    seed_task(sqlite_conn, task_id="task-plan", created_at=now, state=TaskState.PLANNING)
+    planner = PlannerAdapter(FakeTransport([{"payload": _valid_plan_json(), "tokens_in": 11, "tokens_out": 22}]))
+    runner = ToolRunner(
+        "task-plan",
+        _conn_factory(sqlite_conn),
+        JournalWriter(tmp_path / "journal", FrozenClock(now)),
+        redis_client=object(),
+        settings=Settings(log_dir=tmp_path / "logs", executor_workspace_root=tmp_path / "workspaces"),
+        repo_root=tmp_path,
+        planner=planner,
+        clock=FrozenClock(now),
+    )
+
+    result = runner.run_planning({"task_id": "task-plan", "prompt": "make a plan"})
+
+    row = sqlite_conn.execute(
+        "SELECT stage, tool_name, success, failure_code, tokens_in, tokens_out FROM tool_calls"
+    ).fetchone()
+    assert row is not None
+    assert result.ok is True
+    assert row["stage"] == Stage.PLANNING.value
+    assert row["tool_name"] == "planner"
+    assert row["success"] == 1
+    assert row["failure_code"] is None
+    assert row["tokens_in"] == 11
+    assert row["tokens_out"] == 22
+
+
+def test_run_planning_timeout_appends_internal_event(
+    sqlite_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+    seed_task(sqlite_conn, task_id="task-plan-timeout", created_at=now, state=TaskState.PLANNING)
+    transport = FakeTransport(
+        [{}, {}],
+        errors=[TimeoutTransportError("timed out"), TimeoutTransportError("timed out")],
+    )
+    planner = PlannerAdapter(transport)
+    journal_writer = Mock()
+    journal_writer.append.return_value = JournalPosition(file="20260415.zst", offset=0)
+    runner = ToolRunner(
+        "task-plan-timeout",
+        _conn_factory(sqlite_conn),
+        journal_writer,
+        redis_client=object(),
+        settings=Settings(log_dir=tmp_path / "logs", executor_workspace_root=tmp_path / "workspaces"),
+        repo_root=tmp_path,
+        planner=planner,
+        clock=FrozenClock(now),
+    )
+
+    try:
+        runner.run_planning({"task_id": "task-plan-timeout"})
+    except TimeoutTransportError:
+        pass
+    else:
+        raise AssertionError("expected planner timeout to be raised")
+
+    assert transport.call_count == 2
+    journal_writer.append.assert_called_once()
+    event = journal_writer.append.call_args.args[0]
+    assert event.event_type == "internal.planner_timeout"
+    assert event.payload["task_id"] == "task-plan-timeout"
+    assert event.payload["failure_code"] == "timeout"
+
+
+def test_run_executor_records_tool_call(
+    sqlite_conn: sqlite3.Connection,
+    git_repo: Path,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+    seed_task(
+        sqlite_conn,
+        task_id="task-exec",
+        created_at=now,
+        state=TaskState.IMPLEMENTING,
+        lease_branch="main",
+    )
+    settings = Settings(
+        log_dir=tmp_path / "logs",
+        executor_workspace_root=tmp_path / "workspaces",
+        lease_ttl_seconds=30,
+        lease_renew_interval_seconds=1,
+    )
+    redis_client = fakeredis.FakeStrictRedis(decode_responses=True)
+    lease = RedisLease(redis_client, settings, FrozenClock(now))
+    lease_handle = lease.acquire(branch="main", task_id="task-exec", fencing_token=7, ttl_sec=30)
+    assert lease_handle is not None
+    runner = ToolRunner(
+        "task-exec",
+        _conn_factory(sqlite_conn),
+        JournalWriter(tmp_path / "journal", FrozenClock(now)),
+        redis_client=redis_client,
+        settings=settings,
+        repo_root=git_repo,
+        lease_handle=lease_handle,
+        clock=FrozenClock(now),
+    )
+    runner.setup_worktree(lease_branch="main")
+
+    result = runner.run_executor(
+        {
+            "allowed_files": ["src/task_relay/**"],
+            "auto_allowed_patterns": ["tests/**"],
+            "_mock_response": {"changed_files": ["src/task_relay/runner/tool_runner.py"], "exit_code": 0},
+        }
+    )
+
+    row = sqlite_conn.execute(
+        "SELECT stage, tool_name, success, exit_code, failure_code FROM tool_calls"
+    ).fetchone()
+    assert row is not None
+    assert result.ok is True
+    assert result.payload["in_scope_files"] == ["src/task_relay/runner/tool_runner.py"]
+    assert result.payload["out_of_scope_files"] == []
+    assert row["stage"] == Stage.EXECUTING.value
+    assert row["tool_name"] == "executor"
+    assert row["success"] == 1
+    assert row["exit_code"] == 0
+    assert row["failure_code"] is None
+
+
+def test_run_review_records_tool_call(
+    sqlite_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+    seed_task(sqlite_conn, task_id="task-review", created_at=now, state=TaskState.REVIEWING)
+    reviewer = ReviewerAdapter(
+        FakeTransport(
+            [
+                {
+                    "payload": {
+                        "decision": "pass",
+                        "criteria": [
+                            {
+                                "status": "satisfied",
+                                "evidence_refs": ["diff:1"],
+                            }
+                        ],
+                        "policy_breaches": [],
+                        "extra_files": [],
+                    },
+                    "tokens_in": 3,
+                    "tokens_out": 5,
+                }
+            ]
+        )
+    )
+    runner = ToolRunner(
+        "task-review",
+        _conn_factory(sqlite_conn),
+        JournalWriter(tmp_path / "journal", FrozenClock(now)),
+        redis_client=object(),
+        settings=Settings(log_dir=tmp_path / "logs", executor_workspace_root=tmp_path / "workspaces"),
+        repo_root=tmp_path,
+        reviewer=reviewer,
+        clock=FrozenClock(now),
+    )
+    plan = Plan(
+        task_id="task-review",
+        plan_rev=1,
+        planner_version="planner-v1",
+        plan_json=_valid_plan_json(),
+        validator_score=100,
+        validator_errors=0,
+        approved_by=None,
+        approved_at=None,
+        approved_kind=None,
+        created_at=now,
+    )
+
+    result = runner.run_review(plan, "HEAD~1..HEAD")
+
+    row = sqlite_conn.execute(
+        "SELECT stage, tool_name, success, tokens_in, tokens_out FROM tool_calls"
+    ).fetchone()
+    assert row is not None
+    assert result.ok is True
+    assert result.payload["decision"] == "pass"
+    assert result.payload["unchecked_count"] == 0
+    assert row["stage"] == Stage.REVIEWING.value
+    assert row["tool_name"] == "reviewer"
+    assert row["success"] == 1
+    assert row["tokens_in"] == 3
+    assert row["tokens_out"] == 5
+
+
+def test_cleanup_worktree_removes_worktree(
     sqlite_conn: sqlite3.Connection,
     git_repo: Path,
     tmp_path: Path,
@@ -111,7 +314,7 @@ def test_observe_state_change_done_cleans_up_worktree(
     assert task is not None
     assert task.worktree_path is not None
 
-    runner.observe_state_change(TaskState.DONE)
+    runner.cleanup_worktree()
 
     branch_result = subprocess.run(
         ["git", "-C", str(git_repo), "branch", "--list", "task-relay/task-done"],
@@ -135,3 +338,15 @@ def _conn_factory(sqlite_conn: sqlite3.Connection) -> Callable[[], sqlite3.Conne
         return conn
 
     return factory
+
+
+def _valid_plan_json() -> dict[str, object]:
+    return {
+        "goal": "Implement ToolRunner",
+        "sub_tasks": ["wire subprocess orchestration"],
+        "allowed_files": ["src/task_relay/**"],
+        "auto_allowed_patterns": ["tests/**"],
+        "acceptance_criteria": ["tests pass"],
+        "forbidden_changes": ["no schema drift"],
+        "risk_notes": ["subprocess timeout handling"],
+    }
