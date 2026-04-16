@@ -295,10 +295,15 @@ def reconcile(settings: Settings) -> None:
 @cli.command("retention")
 @click.option("--scope", type=click.Choice(["log", "journal", "all"]), default="all", show_default=True)
 @click.option("--dry-run", is_flag=True, default=False)
+@click.option("--json", "as_json", is_flag=True, default=False)
 @click.pass_obj
-def retention(settings: Settings, scope: str, dry_run: bool) -> None:
+def retention(settings: Settings, scope: str, dry_run: bool, as_json: bool) -> None:
     if dry_run:
-        click.echo(json.dumps({"dry_run": True, "scope": scope}, ensure_ascii=False, sort_keys=True))
+        payload = {"dry_run": True, "scope": scope}
+        if as_json:
+            click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        else:
+            click.echo(f"dry_run scope={scope}")
         return
     result: dict[str, Any] = {}
     if scope in {"log", "all"}:
@@ -310,7 +315,19 @@ def retention(settings: Settings, scope: str, dry_run: bool) -> None:
     if scope in {"journal", "all"}:
         journal_retention = JournalRetention(settings.journal_dir)
         result["journal_deleted"] = journal_retention.sweep()
-    click.echo(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    log_result = result.get("log")
+    if isinstance(log_result, dict):
+        orphan_files = int(log_result.get("orphan_files", 0))
+        stale_metadata = int(log_result.get("stale_metadata", 0))
+        if orphan_files > 0 or stale_metadata > 0:
+            click.echo(
+                f"retention warnings: orphan_files={orphan_files} stale_metadata={stale_metadata}",
+                err=True,
+            )
+    if as_json:
+        click.echo(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    else:
+        click.echo(f"retention scope={scope} result={json.dumps(result, ensure_ascii=False, sort_keys=True)}")
 
 
 @cli.command("approve")
@@ -390,9 +407,8 @@ def retry_system(settings: Settings, actor: str, stage: str) -> None:
 def projection_rebuild(settings: Settings, task_id: str, force: bool) -> None:
     conn = _open_conn(settings)
     try:
-        click.echo(rebuild_for_task(conn, task_id, force=force))
-    except NotImplementedError as exc:
-        raise click.ClickException("projection rebuild: Phase 2 未実装") from exc
+        count = rebuild_for_task(conn, task_id, force=force)
+        click.echo(f"Rebuilt {count} outbox rows for {task_id}")
     finally:
         conn.close()
 

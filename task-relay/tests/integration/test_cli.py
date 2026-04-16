@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import hmac
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from task_relay.cli import cli
+from task_relay.db.connection import connect
 from task_relay.ingress.forgejo_webhook import canonicalize
 from task_relay.journal.reader import JournalReader
 from task_relay.journal.writer import JournalWriter
-from task_relay.types import CanonicalEvent
+from task_relay.types import CanonicalEvent, TaskState
+
+from tests.unit._test_helpers import insert_plan_row, seed_task
 
 
 @pytest.fixture
@@ -123,3 +127,50 @@ def test_migrate_ingester_router_status_flow_shows_planning(cli_env: dict[str, P
     assert router_result.output.strip() == "1"
     assert status_result.exit_code == 0
     assert "planning=1" in status_result.output
+
+
+def test_projection_rebuild_cli_echoes_rebuilt_row_count(cli_env: dict[str, Path | str]) -> None:
+    runner = CliRunner()
+    migrate_result = runner.invoke(cli, ["migrate"])
+    assert migrate_result.exit_code == 0
+
+    conn = connect(Path(cli_env["sqlite_path"]))
+    try:
+        now = datetime(2026, 4, 15, 0, 0, tzinfo=timezone.utc)
+        task = seed_task(
+            conn,
+            task_id="task-cli-rebuild",
+            source_issue_id="42",
+            created_at=now,
+            state=TaskState.DONE,
+            state_rev=2,
+        )
+        insert_plan_row(
+            conn,
+            task_id=task.task_id,
+            plan_rev=1,
+            plan_json={"acceptance_criteria": ["works"]},
+            created_at=now,
+        )
+    finally:
+        conn.close()
+
+    result = runner.invoke(cli, ["projection-rebuild", "--task", "task-cli-rebuild"])
+
+    assert result.exit_code == 0
+    assert "Rebuilt " in result.output
+    assert "outbox rows for task-cli-rebuild" in result.output
+
+
+def test_retention_cli_json_outputs_dict(cli_env: dict[str, Path | str]) -> None:
+    runner = CliRunner()
+    migrate_result = runner.invoke(cli, ["migrate"])
+    assert migrate_result.exit_code == 0
+
+    result = runner.invoke(cli, ["retention", "--scope", "all", "--json"])
+
+    payload = json.loads(result.output)
+    assert result.exit_code == 0
+    assert isinstance(payload, dict)
+    assert "journal_deleted" in payload
+    assert "log" in payload
