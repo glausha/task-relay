@@ -247,22 +247,24 @@ def router(settings: Settings, once: bool, interval: float) -> None:
 @click.pass_context
 def runner_cmd(ctx: click.Context, once: bool, task_id: str | None) -> None:
     settings = ctx.obj
-    from .runner.adapters.base import AdapterTransport
     from .runner.adapters.planner import PlannerAdapter
     from .runner.adapters.reviewer import ReviewerAdapter
     from .runner.dispatcher import TaskDispatcher
-
-    class StubTransport(AdapterTransport):
-        def request(self, *, request_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
-            raise NotImplementedError("Phase 3: inject real transport")
+    from .runner.transports.anthropic_transport import AnthropicTransport
+    from .runner.transports.codex_transport import CodexTransport
 
     def conn_factory() -> sqlite3.Connection:
         return _open_conn(settings)
 
     redis_client = redis.from_url(settings.redis_url, decode_responses=True)
     writer = _open_writer(settings)
-    planner = PlannerAdapter(StubTransport())
-    reviewer = ReviewerAdapter(StubTransport())
+    planner = PlannerAdapter(
+        AnthropicTransport(
+            model=settings.planner_model,
+            max_tokens=settings.planner_max_tokens,
+        )
+    )
+    reviewer = ReviewerAdapter(CodexTransport(model=settings.reviewer_model))
     dispatcher = TaskDispatcher(
         conn_factory=conn_factory,
         journal_writer=writer,

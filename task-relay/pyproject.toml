@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "aiohttp>=3.9",
+  "anthropic>=0.39",
   "httpx>=0.27",
   "redis>=5.0",
   "zstandard>=0.22",
@@ -39,6 +40,9 @@ packages = ["src/task_relay"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+  "llm: tests that require live LLM credentials or local LLM CLIs",
+]
 
 [tool.ruff]
 line-length = 100

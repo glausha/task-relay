@@ -1,9 +1,16 @@
+import os
 import subprocess
 import sqlite3
 
 import pytest
 from pathlib import Path
 from collections.abc import Iterator
+
+
+llm = pytest.mark.skipif(
+    not (os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")),
+    reason="LLM credentials not configured",
+)
 
 
 @pytest.fixture

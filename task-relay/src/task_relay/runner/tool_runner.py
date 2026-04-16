@@ -119,6 +119,8 @@ class ToolRunner:
             "plan_json": plan_json,
             "allowed_files": plan_json.get("allowed_files", []),
             "auto_allowed_patterns": plan_json.get("auto_allowed_patterns", []),
+            "timeout": self._settings.executor_timeout,
+            "worktree_path": str(worktree_path),
             "_mock_response": plan_json.get("_mock_response"),
         }
         log_writer.write_line({"event": "executor_child_payload", "payload": child_payload})
