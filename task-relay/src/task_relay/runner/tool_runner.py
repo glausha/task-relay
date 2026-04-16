@@ -24,6 +24,11 @@ from task_relay.runner.adapters.base import AdapterOutput, TimeoutDecision
 from task_relay.runner.adapters.executor import check_file_scope
 from task_relay.runner.adapters.planner import PlannerAdapter
 from task_relay.runner.adapters.reviewer import ReviewerAdapter
+from task_relay.runner.git_safety import (
+    assert_lease_before_mutate,
+    push_feature_branch,
+    update_head_commit,
+)
 from task_relay.runner.log_writer import LogWriter
 from task_relay.runner.worktree import create_worktree, remove_worktree, worktree_exists
 from task_relay.types import (
@@ -33,6 +38,7 @@ from task_relay.types import (
     Plan,
     Source,
     Stage,
+    Task,
     TaskState,
     ToolCallRecord,
 )
@@ -79,6 +85,7 @@ class ToolRunner:
         reviewer: ReviewerAdapter | None = None,
         lease_handle: LeaseHandle | None = None,
         redis_lease: RedisLease | None = None,
+        fencing_token: int | None = None,
         clock: Clock = SystemClock(),
     ) -> None:
         self._task_id = task_id
@@ -92,6 +99,7 @@ class ToolRunner:
         self._reviewer = reviewer
         self._lease_handle = lease_handle
         self._redis_lease = redis_lease or self._build_redis_lease(redis_client)
+        self._fencing_token = lease_handle.fencing_token if fencing_token is None and lease_handle else fencing_token
 
     def run_planning(self, plan_input: dict[str, Any]) -> AdapterOutput:
         planner = self._require_planner()
@@ -104,13 +112,15 @@ class ToolRunner:
         )
 
     def run_executor(self, plan_json: dict[str, Any]) -> AdapterOutput:
+        task = self._require_task()
+        worktree_path = self._require_worktree_path(task)
+        # WHY: git writes must fail fast if this worker no longer owns the branch lease.
+        self._assert_lease_before_mutate(task.lease_branch)
         call_id = new_call_id()
         started = self._clock.now()
         log_writer = LogWriter(self._settings.log_dir, self._task_id, Stage.EXECUTING, call_id, started)
         self._insert_tool_call_start(call_id=call_id, stage=Stage.EXECUTING, tool_name="executor", started_at=started)
         log_writer.write_line({"event": "executor_input", "payload": plan_json})
-
-        worktree_path = self._require_worktree_path()
         request_id = new_request_id()
         child_payload = {
             "executor_child_protocol": "v1",
@@ -295,6 +305,14 @@ class ToolRunner:
             )
             return result
 
+        conn = self._conn_factory()
+        try:
+            # WHY: reviewer diffs must anchor to the post-mutate HEAD seen by the successful executor run.
+            update_head_commit(conn, self._task_id, worktree_path, self._clock.now())
+            conn.commit()
+        finally:
+            conn.close()
+
         result = self._executor_output_from_child(plan_json=plan_json, response=child_result)
         log_writer.write_line({"event": "executor_result", "result": result.payload if result.ok else child_result})
         self._record_call_end(
@@ -317,13 +335,16 @@ class ToolRunner:
             "plan_json": plan.plan_json,
             "diff_ref": diff_ref,
         }
-        return self._run_in_process_stage(
+        result = self._run_in_process_stage(
             stage=Stage.REVIEWING,
             tool_name=reviewer.contract.name,
             request_payload=review_input,
             call_adapter=reviewer.call,
             timeout_event_type=None,
         )
+        if result.ok and result.payload.get("decision") == "pass":
+            self._push_feature_branch_after_review()
+        return result
 
     def observe_state_change(self, state: TaskState) -> None:
         conn = self._conn_factory()
@@ -397,6 +418,22 @@ class ToolRunner:
         if all(hasattr(redis_client, attr) for attr in required_attrs):
             return RedisLease(redis_client, self._settings, self._clock)
         return None
+
+    def _assert_lease_before_mutate(self, branch: str | None) -> None:
+        if self._redis_lease is None or branch is None or self._fencing_token is None:
+            return
+        assert_lease_before_mutate(
+            self._redis_lease,
+            branch=branch,
+            task_id=self._task_id,
+            fencing_token=self._fencing_token,
+        )
+
+    def _push_feature_branch_after_review(self) -> None:
+        task = self._require_task()
+        if task.worktree_path is None or task.feature_branch is None:
+            return
+        push_feature_branch(Path(task.worktree_path), task.feature_branch)
 
     def _require_planner(self) -> PlannerAdapter:
         if self._planner is None:
@@ -551,13 +588,20 @@ class ToolRunner:
         finally:
             conn.close()
 
-    def _require_worktree_path(self) -> Path:
+    def _require_task(self) -> Task:
         conn = self._conn_factory()
         try:
             task = get_task(conn, self._task_id)
         finally:
             conn.close()
-        if task is None or task.worktree_path is None:
+        if task is None:
+            raise RuntimeError(f"task {self._task_id} is not configured")
+        return task
+
+    def _require_worktree_path(self, task: Task | None = None) -> Path:
+        if task is None:
+            task = self._require_task()
+        if task.worktree_path is None:
             raise RuntimeError("executor worktree is not configured")
         return Path(task.worktree_path)
 

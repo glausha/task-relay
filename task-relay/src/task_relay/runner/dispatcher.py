@@ -61,6 +61,7 @@ class TaskDispatcher:
             clock=clock,
         )
         self._lease_handles: dict[str, LeaseHandle] = {}
+        self._fencing_tokens: dict[str, int] = {}
         self._last_dispatched_task_id: str | None = None
         conn = self._conn_factory()
         try:
@@ -105,6 +106,7 @@ class TaskDispatcher:
             conn.close()
 
         self._lease_handles[task_id] = lease_handle
+        self._fencing_tokens[task_id] = fencing_token
         self._last_dispatched_task_id = task_id
         return 1
 
@@ -118,7 +120,7 @@ class TaskDispatcher:
         if task is None:
             return
 
-        runner = self._tool_runner(task_id)
+        runner = self._tool_runner(task_id, fencing_token=self._fencing_tokens.get(task_id))
         if task.state == TaskState.PLANNING:
             self._run_planning_stage(task, runner)
             return
@@ -150,7 +152,7 @@ class TaskDispatcher:
             stage = event.payload.get("stage")
             self._retry_system_handler.handle_retry_system(None if stage is None else str(stage))
 
-    def _tool_runner(self, task_id: str) -> ToolRunner:
+    def _tool_runner(self, task_id: str, fencing_token: int | None = None) -> ToolRunner:
         return ToolRunner(
             task_id=task_id,
             conn_factory=self._conn_factory,
@@ -163,6 +165,7 @@ class TaskDispatcher:
             reviewer=self._reviewer,
             lease_handle=self._lease_handles.get(task_id),
             redis_lease=self._redis_lease,
+            fencing_token=self._fencing_tokens.get(task_id) if fencing_token is None else fencing_token,
         )
 
     def _run_planning_stage(self, task: Task, runner: ToolRunner) -> None:
