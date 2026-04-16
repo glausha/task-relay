@@ -310,6 +310,7 @@ def apply_critical_off_same_state(ctx: GuardContext) -> None:
 def apply_needs_fix(ctx: GuardContext) -> None:
     state_rev, critical = bump_state(ctx, TaskState.NEEDS_FIX)
     _insert_snapshot(ctx, state=TaskState.NEEDS_FIX, state_rev=state_rev, critical=critical)
+    _insert_alert(ctx, alert_kind=AlertKind.NEEDS_FIX, state=TaskState.NEEDS_FIX, state_rev=state_rev)
 
 
 def apply_resume_clean_to_plan_approved(ctx: GuardContext) -> None:

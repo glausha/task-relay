@@ -214,6 +214,37 @@ def test_implementing_lease_lost_goes_human_review_required_with_alert(sqlite_co
     assert [row["stream"] for row in streams].count("discord_alert") == 1
 
 
+def test_implementing_executor_out_of_scope_goes_needs_fix_with_alert(sqlite_conn) -> None:
+    router = Router(Settings())
+    task = _seed_task(sqlite_conn, "task-needs-fix-alert", state=TaskState.IMPLEMENTING)
+    event = _event(
+        event_id="evt-needs-fix-alert",
+        event_type="internal.executor_finished",
+        payload={"task_id": task.task_id, "exit_code": 0, "out_of_scope_files": ["src/rogue.py"]},
+    )
+    queries.insert_event(sqlite_conn, event)
+
+    result = router.run_once(sqlite_conn, event)
+
+    updated = queries.get_task(sqlite_conn, task.task_id)
+    rows = sqlite_conn.execute(
+        """
+        SELECT stream, payload_json
+        FROM projection_outbox
+        WHERE origin_event_id = ?
+        ORDER BY outbox_id
+        """,
+        (event.event_id,),
+    ).fetchall()
+
+    assert result.to_state is TaskState.NEEDS_FIX
+    assert updated is not None
+    assert updated.state is TaskState.NEEDS_FIX
+    assert [row["stream"] for row in rows].count("discord_alert") == 1
+    alert_row = next(row for row in rows if row["stream"] == "discord_alert")
+    assert "needs_fix" in str(alert_row["payload_json"])
+
+
 def test_planner_timeout_goes_human_review_required(sqlite_conn) -> None:
     router = Router(Settings())
     task = _seed_task(sqlite_conn, "task-timeout-plan", state=TaskState.PLANNING)

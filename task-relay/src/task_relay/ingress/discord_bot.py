@@ -11,8 +11,7 @@ from discord import app_commands
 from task_relay.config import Settings
 from task_relay.db.connection import connect
 from task_relay.ingress.discord_gateway import DiscordIngress
-from task_relay.rate.windows import should_stop_new_tasks
-from task_relay.types import TaskState
+from task_relay.status import empty_status_snapshot, load_status_snapshot
 
 
 class TaskRelayBot(discord.Client):
@@ -108,83 +107,16 @@ class TaskRelayBot(discord.Client):
     def _load_status_message(self) -> str:
         conn = self._connect_db()
         try:
-            state_rows = conn.execute(
-                """
-                SELECT state, COUNT(*) AS count
-                FROM tasks
-                GROUP BY state
-                """
-            ).fetchall()
-            rate_rows = conn.execute(
-                """
-                SELECT tool_name, remaining, "limit", window_reset_at
-                FROM rate_windows
-                ORDER BY tool_name ASC
-                """
-            ).fetchall()
+            snapshot = load_status_snapshot(conn, self._settings)
         except sqlite3.OperationalError:
-            state_rows = []
-            rate_rows = []
+            snapshot = empty_status_snapshot()
         finally:
             conn.close()
-        counts = {row["state"]: int(row["count"]) for row in state_rows}
-        state_counts = {state.value: counts.get(state.value, 0) for state in TaskState}
-        in_progress = sum(
-            state_counts[state.value]
-            for state in (
-                TaskState.PLANNING,
-                TaskState.PLAN_APPROVED,
-                TaskState.IMPLEMENTING,
-                TaskState.REVIEWING,
-            )
-        )
-        waiting_human = sum(
-            state_counts[state.value]
-            for state in (
-                TaskState.PLAN_PENDING_APPROVAL,
-                TaskState.HUMAN_REVIEW_REQUIRED,
-                TaskState.NEEDS_FIX,
-            )
-        )
-        global_degraded = state_counts[TaskState.SYSTEM_DEGRADED.value]
-        rate_protected = any(
-            should_stop_new_tasks(remaining=int(row["remaining"]), limit=int(row["limit"])) for row in rate_rows
-        )
-        lines = [f"{state.value}={state_counts[state.value]}" for state in TaskState]
-        lines.append(f"in_progress={in_progress}")
-        lines.append(f"waiting_human={waiting_human}")
-        lines.append(f"global_degraded={global_degraded}")
-        lines.append(
-            f"scope_label={self._scope_label(in_progress, waiting_human, global_degraded, rate_protected)}"
-        )
-        lines.append("breaker_state=unknown")
-        lines.append(f"rate_stop_new_tasks={'on' if rate_protected else 'off'}")
-        for row in rate_rows:
-            lines.append(
-                f"rate[{row['tool_name']}]={row['remaining']}/{row['limit']} reset_at={row['window_reset_at']}"
-            )
-        return "\n".join(lines)
+        return "\n".join(snapshot.render_lines())
 
     def _connect_db(self) -> sqlite3.Connection:
         self._settings.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         return connect(self._settings.sqlite_path)
-
-    @staticmethod
-    def _scope_label(
-        in_progress: int,
-        waiting_human: int,
-        global_degraded: int,
-        rate_protected: bool,
-    ) -> str:
-        if global_degraded > 0:
-            return "全体障害"
-        if rate_protected:
-            return "全体保護中"
-        if waiting_human > 0:
-            return "局所障害"
-        if in_progress > 0:
-            return "進行中"
-        return "待機中"
 
     async def setup_hook(self) -> None:
         for guild_id in self._settings.discord_guild_ids:

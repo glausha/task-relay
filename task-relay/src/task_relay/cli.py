@@ -30,11 +30,11 @@ from .projection.discord_sink import DiscordSink
 from .projection.forgejo_sink import ForgejoSink
 from .projection.rebuild import rebuild_for_task
 from .projection.worker import ProjectionWorker
-from .rate.windows import should_stop_new_tasks
 from .retention.journal_retention import JournalRetention
 from .retention.log_retention import LogRetention
 from .router.router import Router
-from .types import Stream, TaskState
+from .status import load_status_snapshot
+from .types import Stream
 
 
 def _open_conn(settings: Settings) -> sqlite3.Connection:
@@ -102,24 +102,6 @@ def _append_cli_command(
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
     return event.request_id or ""
-
-
-def _scope_label(
-    *,
-    in_progress: int,
-    waiting_human: int,
-    global_degraded: int,
-    rate_protected: bool,
-) -> str:
-    if global_degraded > 0:
-        return "全体障害"
-    if rate_protected:
-        return "全体保護中"
-    if waiting_human > 0:
-        return "局所障害"
-    if in_progress > 0:
-        return "進行中"
-    return "待機中"
 
 
 @click.group(name="task-relay")
@@ -606,64 +588,11 @@ def reconcile_report(settings: Settings, last_only: bool) -> None:
 def status(settings: Settings) -> None:
     conn = _open_conn(settings)
     try:
-        state_rows = conn.execute(
-            """
-            SELECT state, COUNT(*) AS count
-            FROM tasks
-            GROUP BY state
-            """
-        ).fetchall()
-        rate_rows = conn.execute(
-            """
-            SELECT tool_name, remaining, "limit", window_reset_at
-            FROM rate_windows
-            ORDER BY tool_name ASC
-            """
-        ).fetchall()
+        snapshot = load_status_snapshot(conn, settings)
     finally:
         conn.close()
-    counts = {row["state"]: int(row["count"]) for row in state_rows}
-    state_counts = {state.value: counts.get(state.value, 0) for state in TaskState}
-    for state in TaskState:
-        click.echo(f"{state.value}={state_counts[state.value]}")
-    in_progress = sum(
-        state_counts[state.value]
-        for state in (
-            TaskState.PLANNING,
-            TaskState.PLAN_APPROVED,
-            TaskState.IMPLEMENTING,
-            TaskState.REVIEWING,
-        )
-    )
-    waiting_human = sum(
-        state_counts[state.value]
-        for state in (
-            TaskState.PLAN_PENDING_APPROVAL,
-            TaskState.HUMAN_REVIEW_REQUIRED,
-            TaskState.NEEDS_FIX,
-        )
-    )
-    global_degraded = state_counts[TaskState.SYSTEM_DEGRADED.value]
-    rate_protected = any(
-        should_stop_new_tasks(remaining=int(row["remaining"]), limit=int(row["limit"])) for row in rate_rows
-    )
-    click.echo(f"in_progress={in_progress}")
-    click.echo(f"waiting_human={waiting_human}")
-    click.echo(f"global_degraded={global_degraded}")
-    scope_label = _scope_label(
-        in_progress=in_progress,
-        waiting_human=waiting_human,
-        global_degraded=global_degraded,
-        rate_protected=rate_protected,
-    )
-    click.echo(f"scope_label={scope_label}")
-    # WHY: breaker state is in-memory only in Phase 1.
-    click.echo("breaker_state=unknown")
-    click.echo(f"rate_stop_new_tasks={'on' if rate_protected else 'off'}")
-    for row in rate_rows:
-        click.echo(
-            f"rate[{row['tool_name']}]={row['remaining']}/{row['limit']} reset_at={row['window_reset_at']}"
-        )
+    for line in snapshot.render_lines():
+        click.echo(line)
 
 
 def main() -> None:

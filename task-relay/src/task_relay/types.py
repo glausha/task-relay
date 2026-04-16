@@ -70,6 +70,7 @@ class CommentKind(str, Enum):
 
 
 class AlertKind(str, Enum):
+    NEEDS_FIX = "needs_fix"
     HUMAN_REVIEW_REQUIRED = "human_review_required"
     SYSTEM_DEGRADED = "system_degraded"
     BREAKER_OPEN = "breaker_open"

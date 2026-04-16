@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hmac
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,13 +10,15 @@ import pytest
 from click.testing import CliRunner
 
 import task_relay.cli as cli_module
+from task_relay.breaker.circuit_breaker import EVENT_TYPE_BREAKER_FATAL_RECORDED
 from task_relay.cli import cli
 from task_relay.db.connection import connect
-from task_relay.db.queries import insert_outbox, upsert_task_on_create
+from task_relay.db.queries import insert_outbox, insert_system_event, upsert_task_on_create
+from task_relay.errors import FailureCode
 from task_relay.ingress.forgejo_webhook import canonicalize
 from task_relay.journal.reader import JournalReader
 from task_relay.journal.writer import JournalWriter
-from task_relay.types import CanonicalEvent, Stream, TaskState
+from task_relay.types import CanonicalEvent, Severity, Stream, TaskState
 
 from tests.unit._test_helpers import insert_plan_row, seed_task
 
@@ -130,6 +132,8 @@ def test_migrate_ingester_router_status_flow_shows_planning(cli_env: dict[str, P
     assert router_result.output.strip() == "1"
     assert status_result.exit_code == 0
     assert "planning=1" in status_result.output
+    assert "breaker_state=closed" in status_result.output
+    assert "breaker_open_codes=[]" in status_result.output
 
 
 def test_projection_rebuild_cli_echoes_rebuilt_row_count(cli_env: dict[str, Path | str]) -> None:
@@ -280,3 +284,39 @@ def test_reconcile_outputs_json_dict(cli_env: dict[str, Path | str]) -> None:
     payload: dict[str, Any] = json.loads(result.output)
     assert result.exit_code == 0
     assert payload == {"degraded_aged": 0, "events_emitted": 0, "implementing_checked": 0}
+
+
+def test_status_reports_open_breaker_scope(cli_env: dict[str, Path | str]) -> None:
+    runner = CliRunner()
+    migrate_result = runner.invoke(cli, ["migrate"])
+    assert migrate_result.exit_code == 0
+
+    conn = connect(Path(cli_env["sqlite_path"]))
+    try:
+        now = datetime.now(timezone.utc)
+        for offset in (3, 2, 1):
+            observed_at = now - timedelta(seconds=offset)
+            insert_system_event(
+                conn,
+                task_id=None,
+                event_type=EVENT_TYPE_BREAKER_FATAL_RECORDED,
+                severity=Severity.WARNING,
+                payload_json=json.dumps(
+                    {
+                        "failure_code": FailureCode.AUTH_ERROR.value,
+                        "at": observed_at.isoformat(),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                created_at=observed_at,
+            )
+    finally:
+        conn.close()
+
+    result = runner.invoke(cli, ["status"])
+
+    assert result.exit_code == 0
+    assert "breaker_state=open" in result.output
+    assert "breaker_open_codes=['auth_error']" in result.output
+    assert "scope_label=全体保護中" in result.output
