@@ -21,11 +21,30 @@ def test_verify_signature_accepts_valid_hmac() -> None:
     assert verify_signature(body, signature, secret) is True
 
 
+def test_verify_signature_accepts_raw_hex_hmac() -> None:
+    body = b'{"action":"opened"}'
+    secret = b"top-secret"
+    signature = hmac.new(secret, body, "sha256").hexdigest()
+    assert verify_signature(body, signature, secret) is True
+
+
 def test_verify_signature_rejects_tampered_body() -> None:
     body = b'{"action":"opened"}'
     secret = b"top-secret"
     signature = "sha256=" + hmac.new(secret, body, "sha256").hexdigest()
     assert verify_signature(b'{"action":"closed"}', signature, secret) is False
+
+
+def test_verify_signature_rejects_invalid_hex() -> None:
+    body = b'{"action":"opened"}'
+    secret = b"top-secret"
+    assert verify_signature(body, "not-valid-hex", secret) is False
+
+
+def test_verify_signature_rejects_empty_header() -> None:
+    body = b'{"action":"opened"}'
+    secret = b"top-secret"
+    assert verify_signature(body, "", secret) is False
 
 
 def test_canonicalize_maps_issues_opened() -> None:

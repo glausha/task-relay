@@ -217,6 +217,15 @@ def test_projection_cli_dry_run_once_processes_outbox(cli_env: dict[str, Path | 
     assert row["sent_at"] is not None
 
 
+def test_projection_cli_help_lists_with_discord_flag(cli_env: dict[str, Path | str]) -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["projection", "--help"])
+
+    assert result.exit_code == 0
+    assert "--with-discord" in result.output
+
+
 def test_retention_cli_json_outputs_dict(cli_env: dict[str, Path | str]) -> None:
     runner = CliRunner()
     migrate_result = runner.invoke(cli, ["migrate"])

@@ -7,7 +7,14 @@ from datetime import datetime, timedelta
 from typing import Protocol
 
 from task_relay.config import Settings
-from task_relay.db.queries import claim_next_outbox, get_cursor, mark_outbox_sent, reschedule_outbox, upsert_cursor
+from task_relay.db.queries import (
+    claim_next_outbox,
+    get_cursor,
+    mark_outbox_sent,
+    reclaim_stale_outbox,
+    reschedule_outbox,
+    upsert_cursor,
+)
 from task_relay.clock import Clock, SystemClock
 from task_relay.system_events import append_system_event
 from task_relay.types import OutboxRecord, Severity, Stream
@@ -25,15 +32,25 @@ class ProjectionWorker:
         settings: Settings,
         worker_id: str,
         clock: Clock = SystemClock(),
+        stale_claim_seconds: int | None = None,
     ) -> None:
         self._conn = conn
         self._sinks = sinks
         self._settings = settings
         self._worker_id = worker_id
         self._clock = clock
+        self._stale_claim_seconds = (
+            settings.projection_stale_claim_seconds if stale_claim_seconds is None else stale_claim_seconds
+        )
 
     def step(self) -> int:
         now = self._clock.now()
+        # WHY: a crashed worker must not permanently block older rows in the same projection lane.
+        reclaim_stale_outbox(
+            self._conn,
+            now_iso=now.isoformat(),
+            stale_after_seconds=self._stale_claim_seconds,
+        )
         record = claim_next_outbox(self._conn, self._worker_id, now.isoformat())
         if record is None:
             return 0

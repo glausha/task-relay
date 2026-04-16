@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import Mock
 
 import pytest
 
@@ -70,3 +71,26 @@ def test_send_without_client_raises_not_implemented() -> None:
 
     with pytest.raises(NotImplementedError, match="Phase 3: discord client not injected"):
         sink.send(record)
+
+
+def test_send_dm_with_injected_client_uses_threadsafe_submission(monkeypatch: pytest.MonkeyPatch) -> None:
+    future = Mock()
+    loop = Mock()
+    captured: dict[str, object] = {}
+
+    def fake_run_coroutine_threadsafe(coro, target_loop):
+        captured["loop"] = target_loop
+        captured["coro"] = coro
+        coro.close()
+        return future
+
+    monkeypatch.setattr(
+        "task_relay.projection.discord_sink.asyncio.run_coroutine_threadsafe",
+        fake_run_coroutine_threadsafe,
+    )
+    sink = DiscordSink(client=Mock(), loop=loop, admin_user_ids=[1, 2])
+
+    sink._send_dm(42, "hello")
+
+    assert captured["loop"] is loop
+    future.result.assert_called_once_with(timeout=10)

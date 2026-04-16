@@ -23,11 +23,12 @@ SLASH_COMMANDS = {
 
 
 def verify_signature(body_bytes: bytes, signature_header: str, secret: bytes) -> bool:
-    prefix = "sha256="
-    if not signature_header.startswith(prefix):
+    if not signature_header:
         return False
+    prefix = "sha256="
+    provided = signature_header[len(prefix) :] if signature_header.startswith(prefix) else signature_header
     actual = hmac.new(secret, body_bytes, "sha256").hexdigest()
-    return hmac.compare_digest(signature_header[len(prefix) :], actual)
+    return hmac.compare_digest(provided, actual)
 
 
 def canonicalize(

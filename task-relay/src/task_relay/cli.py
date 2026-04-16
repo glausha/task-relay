@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
+import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 from collections.abc import Callable
 from pathlib import Path
 
 import click
+import discord
 import redis
 from aiohttp import web
 
@@ -102,6 +106,61 @@ def _append_cli_command(
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
     return event.request_id or ""
+
+
+@dataclass(frozen=True)
+class _ProjectionDiscordRuntime:
+    client: discord.Client
+    loop: asyncio.AbstractEventLoop
+    thread: threading.Thread
+
+    def close(self) -> None:
+        if not self.thread.is_alive():
+            return
+        if not self.loop.is_closed() and not self.client.is_closed():
+            asyncio.run_coroutine_threadsafe(self.client.close(), self.loop).result(timeout=10)
+        self.thread.join(timeout=10)
+
+
+def _start_projection_discord_runtime(token: str) -> _ProjectionDiscordRuntime:
+    started = threading.Event()
+    state: dict[str, Any] = {}
+
+    def runner() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        client = discord.Client(intents=discord.Intents.default())
+        state["loop"] = loop
+        state["client"] = client
+        loop.call_soon(started.set)
+        try:
+            loop.run_until_complete(client.start(token))
+        except Exception as exc:
+            state["error"] = exc
+        finally:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+
+    thread = threading.Thread(target=runner, name="task-relay-projection-discord", daemon=True)
+    thread.start()
+    if not started.wait(timeout=10):
+        raise click.ClickException("discord projection client did not start")
+    error = state.get("error")
+    if error is not None:
+        raise click.ClickException(f"discord projection client failed to start: {error}")
+    client = state.get("client")
+    loop = state.get("loop")
+    if not isinstance(client, discord.Client) or not isinstance(loop, asyncio.AbstractEventLoop):
+        raise click.ClickException("discord projection client initialization failed")
+    try:
+        # WHY: projection DM delivery must wait for a live gateway session before sending.
+        asyncio.run_coroutine_threadsafe(client.wait_until_ready(), loop).result(timeout=10)
+    except Exception as exc:
+        if not loop.is_closed() and not client.is_closed():
+            asyncio.run_coroutine_threadsafe(client.close(), loop).result(timeout=10)
+        thread.join(timeout=10)
+        raise click.ClickException(f"discord projection client did not become ready: {exc}") from exc
+    return _ProjectionDiscordRuntime(client=client, loop=loop, thread=thread)
 
 
 @click.group(name="task-relay")
@@ -389,10 +448,19 @@ def runner_cmd(ctx: click.Context, once: bool, task_id: str | None) -> None:
 @click.option("--once", is_flag=True, default=False)
 @click.option("--interval", default=0.5, type=float, show_default=True)
 @click.option("--dry-run", is_flag=True, default=False)
+@click.option("--with-discord", is_flag=True, default=False)
 @click.pass_obj
-def projection(settings: Settings, worker_id: str, once: bool, interval: float, dry_run: bool) -> None:
+def projection(
+    settings: Settings,
+    worker_id: str,
+    once: bool,
+    interval: float,
+    dry_run: bool,
+    with_discord: bool,
+) -> None:
     conn = _open_conn(settings)
     _warm_circuit_breaker(conn, conn_factory=lambda: _open_conn(settings))
+    discord_runtime: _ProjectionDiscordRuntime | None = None
     if dry_run:
         sinks = {stream: LoggingSink() for stream in Stream}
     else:
@@ -404,6 +472,16 @@ def projection(settings: Settings, worker_id: str, once: bool, interval: float, 
             conn=conn,
         )
         discord_sink = DiscordSink(admin_user_ids=settings.admin_user_ids)
+        if with_discord:
+            token = settings.discord_bot_token.get_secret_value()
+            if not token:
+                raise click.ClickException("--with-discord requires TASK_RELAY_DISCORD_BOT_TOKEN")
+            discord_runtime = _start_projection_discord_runtime(token)
+            discord_sink = DiscordSink(
+                client=discord_runtime.client,
+                loop=discord_runtime.loop,
+                admin_user_ids=settings.admin_user_ids,
+            )
         sinks = {
             Stream.TASK_SNAPSHOT: forgejo_sink,
             Stream.TASK_COMMENT: forgejo_sink,
@@ -417,6 +495,8 @@ def projection(settings: Settings, worker_id: str, once: bool, interval: float, 
             return
         worker.run_forever(poll_interval_sec=interval)
     finally:
+        if discord_runtime is not None:
+            discord_runtime.close()
         conn.close()
 
 

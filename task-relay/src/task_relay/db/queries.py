@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from task_relay.db.connection import fetch_one, tx
@@ -382,6 +382,27 @@ def claim_next_outbox(
             (outbox_id,),
         )
     return None if claimed is None else _row_to_outbox_record(claimed)
+
+
+def reclaim_stale_outbox(
+    conn: sqlite3.Connection,
+    *,
+    now_iso: str,
+    stale_after_seconds: int,
+) -> int:
+    cutoff = _parse_datetime(now_iso) - timedelta(seconds=stale_after_seconds)
+    cursor = conn.execute(
+        """
+        UPDATE projection_outbox
+        SET claimed_by = NULL, claimed_at = NULL
+        WHERE sent_at IS NULL
+          AND claimed_by IS NOT NULL
+          AND claimed_at IS NOT NULL
+          AND claimed_at <= ?
+        """,
+        (_to_iso(cutoff),),
+    )
+    return int(cursor.rowcount)
 
 
 def mark_outbox_sent(conn: sqlite3.Connection, outbox_id: int, sent_at: datetime) -> None:

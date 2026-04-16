@@ -117,6 +117,63 @@ def test_projection_worker_reschedules_after_sink_failure(sqlite_conn: sqlite3.C
     assert datetime.fromisoformat(str(row["next_attempt_at"])) > original_next_attempt_at
 
 
+def test_projection_worker_reclaims_stale_claim_before_processing_next_row(sqlite_conn: sqlite3.Connection) -> None:
+    fixed = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+    first_outbox_id = _insert_task_and_outbox(
+        sqlite_conn,
+        now=fixed - timedelta(hours=2),
+        stream=Stream.TASK_COMMENT,
+        target="org/repo",
+        payload={"body": "first", "issue_number": 7},
+        state_rev=1,
+    )
+    second_outbox_id = _insert_task_and_outbox(
+        sqlite_conn,
+        now=fixed - timedelta(hours=1),
+        stream=Stream.TASK_COMMENT,
+        target="org/repo",
+        payload={"body": "second", "issue_number": 7},
+        state_rev=2,
+    )
+    sqlite_conn.execute(
+        """
+        UPDATE projection_outbox
+        SET claimed_by = ?, claimed_at = ?
+        WHERE outbox_id = ?
+        """,
+        ("dead-worker", _iso_z(fixed - timedelta(hours=2)), first_outbox_id),
+    )
+    sink = LoggingSink()
+    worker = ProjectionWorker(
+        sqlite_conn,
+        sinks={Stream.TASK_COMMENT: sink},
+        settings=Settings(projection_stale_claim_seconds=600),
+        worker_id="worker-1",
+        clock=FrozenClock(fixed),
+    )
+
+    assert worker.step() == 1
+    assert worker.step() == 1
+    assert worker.step() == 0
+
+    rows = sqlite_conn.execute(
+        """
+        SELECT outbox_id, sent_at, claimed_by
+        FROM projection_outbox
+        WHERE outbox_id IN (?, ?)
+        ORDER BY outbox_id
+        """,
+        (first_outbox_id, second_outbox_id),
+    ).fetchall()
+
+    assert len(sink.records) == 2
+    assert [record.outbox_id for record in sink.records] == [first_outbox_id, second_outbox_id]
+    assert rows[0]["sent_at"] == _iso_z(fixed)
+    assert rows[0]["claimed_by"] == "worker-1"
+    assert rows[1]["sent_at"] == _iso_z(fixed)
+    assert rows[1]["claimed_by"] == "worker-1"
+
+
 def _insert_task_and_outbox(
     conn: sqlite3.Connection,
     *,

@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     projection_retry_cap_seconds: int = 3600
     projection_retry_max_attempts: int = 50
     projection_retry_degrade_hours: int = 24
+    projection_stale_claim_seconds: int = 600
     implementing_resume_grace_seconds: int = 120
     implementing_resume_heartbeat_seconds: int = 60
     subprocess_sigterm_grace_seconds: int = 15

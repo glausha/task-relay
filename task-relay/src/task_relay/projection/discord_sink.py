@@ -15,9 +15,11 @@ class DiscordSink:
         self,
         *,
         client: discord.Client | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
         admin_user_ids: list[int] | None = None,
     ) -> None:
         self._client = client
+        self._loop = loop
         self._admin_user_ids = [] if admin_user_ids is None else list(admin_user_ids)
 
     def send(self, record: OutboxRecord) -> None:
@@ -48,9 +50,10 @@ class DiscordSink:
         return "\n".join(parts)
 
     def _send_dm(self, user_id: int, message: str) -> None:
-        if self._client is None:
+        if self._client is None or self._loop is None:
             raise NotImplementedError("Phase 3: discord client not injected")
-        asyncio.run(self._async_send_dm(user_id, message))
+        future = asyncio.run_coroutine_threadsafe(self._async_send_dm(user_id, message), self._loop)
+        future.result(timeout=10)
 
     async def _async_send_dm(self, user_id: int, message: str) -> None:
         if self._client is None:
