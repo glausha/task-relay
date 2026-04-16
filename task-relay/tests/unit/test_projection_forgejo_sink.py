@@ -5,7 +5,7 @@ from task_relay.projection.labels import MANAGED_LABELS
 
 
 def test_diff_labels_preserves_unmanaged_labels_and_applies_desired() -> None:
-    sink = ForgejoSink("http://forgejo.local")
+    sink = ForgejoSink(base_url="http://forgejo.local", token="token", owner="org", repo="repo")
 
     final_names = sink._diff_labels(
         current=[{"name": "critical"}, {"name": "bug"}, {"name": "ux"}],
@@ -17,7 +17,7 @@ def test_diff_labels_preserves_unmanaged_labels_and_applies_desired() -> None:
 
 
 def test_diff_labels_keeps_unmanaged_labels_when_desired_is_empty() -> None:
-    sink = ForgejoSink("http://forgejo.local")
+    sink = ForgejoSink(base_url="http://forgejo.local", token="token", owner="org", repo="repo")
 
     final_names = sink._diff_labels(
         current=[{"name": "critical"}, {"name": "bug"}, {"name": "ux"}],
@@ -29,7 +29,7 @@ def test_diff_labels_keeps_unmanaged_labels_when_desired_is_empty() -> None:
 
 
 def test_diff_labels_deduplicates_managed_labels_from_current_and_desired() -> None:
-    sink = ForgejoSink("http://forgejo.local")
+    sink = ForgejoSink(base_url="http://forgejo.local", token="token", owner="org", repo="repo")
 
     final_names = sink._diff_labels(
         current=[{"name": "critical"}, {"name": "critical"}, {"name": "bug"}],

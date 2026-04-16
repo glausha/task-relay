@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from pathlib import Path
 from typing import Any
 from collections.abc import Callable
+from pathlib import Path
 
 import click
+from aiohttp import web
 
 from .breaker.circuit_breaker import CircuitBreaker
 from .config import Settings
@@ -16,6 +17,9 @@ from .db.connection import connect
 from .db.migrations import apply_schema
 from .ingester.journal_ingester import JournalIngester
 from .ingress.cli_source import build_cli_event
+from .ingress.discord_bot import TaskRelayBot
+from .ingress.discord_gateway import DiscordIngress
+from .ingress.forgejo_server import ForgejoWebhookServer
 from .ingress.forgejo_webhook import canonicalize, verify_signature
 from .journal.reader import JournalReader
 from .journal.writer import JournalWriter
@@ -118,8 +122,9 @@ def migrate(settings: Settings) -> None:
 
 
 @cli.command("ingress-forgejo")
-@click.option("--host", default="127.0.0.1", show_default=True)
-@click.option("--port", default=8787, type=int, show_default=True)
+@click.option("--serve", is_flag=True, default=False)
+@click.option("--host", default=None)
+@click.option("--port", default=None, type=int)
 @click.option("--body", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
 @click.option("--event", "event_name", default=None)
 @click.option("--delivery-id", default=None)
@@ -127,6 +132,7 @@ def migrate(settings: Settings) -> None:
 @click.pass_obj
 def ingress_forgejo(
     settings: Settings,
+    serve: bool,
     host: str,
     port: int,
     body: Path | None,
@@ -134,8 +140,21 @@ def ingress_forgejo(
     delivery_id: str | None,
     signature: str | None,
 ) -> None:
-    _ = (host, port)
-    click.echo("ingress-forgejo server stub: Phase 2 では HTTP サーバを起動する")
+    listen_host = host or settings.forgejo_webhook_host
+    listen_port = port or settings.forgejo_webhook_port
+    if serve:
+        if body is not None or event_name is not None or delivery_id is not None or signature is not None:
+            raise click.ClickException("--serve cannot be combined with single-ingest options")
+        writer = _open_writer(settings)
+        server = ForgejoWebhookServer(
+            writer,
+            settings.forgejo_webhook_secret.get_secret_value().encode("utf-8"),
+            host=listen_host,
+            port=listen_port,
+        )
+        web.run_app(server.create_app(), host=listen_host, port=listen_port)
+        return
+    click.echo("ingress-forgejo single-ingest mode")
     if body is None:
         return
     if event_name is None or delivery_id is None or signature is None:
@@ -156,8 +175,13 @@ def ingress_forgejo(
 
 
 @cli.command("ingress-discord")
-def ingress_discord() -> None:
-    click.echo("ingress-discord bot stub: Phase 2 で discord.py bot を起動する")
+@click.pass_context
+def ingress_discord_cmd(ctx: click.Context) -> None:
+    settings = ctx.obj
+    writer = _open_writer(settings)
+    ingress = DiscordIngress(writer)
+    bot = TaskRelayBot(ingress=ingress, settings=settings)
+    bot.run(settings.discord_bot_token.get_secret_value())
 
 
 @cli.command("ingester")

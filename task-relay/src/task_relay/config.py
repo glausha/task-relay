@@ -18,8 +18,14 @@ class Settings(BaseSettings):
     log_dir: Path = Path("var/task-relay/logs")
     redis_url: str = "redis://localhost:6379/0"
     forgejo_base_url: str = "http://localhost:3000"
+    forgejo_webhook_host: str = "127.0.0.1"
+    forgejo_webhook_port: int = 8787
+    forgejo_owner: str = ""
+    forgejo_repo: str = ""
+    forgejo_token: SecretStr = SecretStr("")
     forgejo_webhook_secret: SecretStr = SecretStr("")
     discord_bot_token: SecretStr = SecretStr("")
+    discord_guild_ids: list[int] = Field(default_factory=list)
     admin_user_ids: list[int] = Field(default_factory=list)
     breaker_window_seconds: int = 600
     breaker_fatal_threshold: int = 3
