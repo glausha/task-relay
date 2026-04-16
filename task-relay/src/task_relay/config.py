@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     implementing_resume_grace_seconds: int = 120
     implementing_resume_heartbeat_seconds: int = 60
     subprocess_sigterm_grace_seconds: int = 15
+    executor_workspace_root: Path = Path("var/task-relay/worktrees")
     lease_ttl_seconds: int = 30
     lease_renew_interval_seconds: int = 10
     journal_retain_days: int = 30

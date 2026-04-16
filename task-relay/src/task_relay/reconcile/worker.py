@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable
 
 from ..clock import Clock, SystemClock
@@ -12,6 +13,7 @@ from ..db import queries
 from ..db.connection import fetch_all, fetch_one
 from ..ids import new_event_id
 from ..journal.writer import JournalWriter
+from ..runner.worktree import worktree_exists, worktree_is_clean
 from ..types import CanonicalEvent, Severity, Source, Stage, TaskState
 
 
@@ -60,6 +62,7 @@ class ReconcileWorker:
                 latest_tool_call = self._get_latest_executing_tool_call(conn, task_id)
                 heartbeat_fresh = self._is_heartbeat_fresh(latest_tool_call=latest_tool_call, now=now)
                 worktree_clean = self._is_worktree_clean(
+                    worktree_path=row["worktree_path"],
                     last_known_head_commit=last_known_head_commit,
                     latest_tool_call=latest_tool_call,
                 )
@@ -121,9 +124,14 @@ class ReconcileWorker:
     def _is_worktree_clean(
         self,
         *,
+        worktree_path: str | None,
         last_known_head_commit: str | None,
         latest_tool_call: sqlite3.Row | None,
     ) -> bool:
+        if worktree_path:
+            path = Path(worktree_path)
+            if worktree_exists(path):
+                return worktree_is_clean(path)
         if last_known_head_commit is None:
             return True
         if latest_tool_call is None:

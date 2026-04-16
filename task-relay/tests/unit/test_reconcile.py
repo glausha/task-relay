@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -85,6 +86,43 @@ def test_reconcile_emits_resume_event_for_implementing_task(sqlite_conn: sqlite3
         "last_known_head_commit": "abc123",
         "observed_at": "2026-04-15T12:00:00Z",
     }
+
+
+def test_reconcile_checks_worktree_path_on_disk(
+    sqlite_conn: sqlite3.Connection,
+    git_repo: Path,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+    worktree_path = tmp_path / "repo-worktree"
+    subprocess.run(
+        ["git", "-C", str(git_repo), "worktree", "add", "--detach", str(worktree_path), "main"],
+        check=True,
+        capture_output=True,
+    )
+    (worktree_path / "dirty.txt").write_text("dirty\n")
+    seed_task(
+        sqlite_conn,
+        task_id="task-dirty",
+        created_at=now - timedelta(hours=1),
+        state=TaskState.IMPLEMENTING,
+        worktree_path=str(worktree_path),
+        last_known_head_commit="abc123",
+    )
+    journal_dir = tmp_path / "journal"
+    worker = ReconcileWorker(
+        conn_factory=_conn_factory(sqlite_conn),
+        journal_writer=JournalWriter(journal_dir, FrozenClock(now)),
+        clock=FrozenClock(now),
+    )
+
+    worker.run_once()
+
+    events = list(JournalReader(journal_dir).iterate_from(None))
+    assert len(events) == 1
+    _, event = events[0]
+    assert event.payload["task_id"] == "task-dirty"
+    assert event.payload["worktree_clean"] is False
 
 
 def test_reconcile_records_aged_system_degraded_task(sqlite_conn: sqlite3.Connection, tmp_path: Path) -> None:
