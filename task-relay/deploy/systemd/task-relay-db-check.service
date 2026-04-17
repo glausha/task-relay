@@ -1,6 +1,6 @@
 [Unit]
 Description=task-relay database integrity check
-After=network-online.target redis.service forgejo.service
+After=network-online.target redis.service
 Wants=network-online.target
 
 [Service]
@@ -9,4 +9,3 @@ User=task-relay
 EnvironmentFile=/etc/task-relay/task-relay.env
 WorkingDirectory=/var/lib/task-relay
 ExecStart=/usr/local/bin/task-relay db-check
-

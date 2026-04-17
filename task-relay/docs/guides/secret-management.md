@@ -4,12 +4,12 @@
 
 **対象 secret** (全て暗号化して管理):
 
-| 変数 | 用途 | 出所 |
-|---|---|---|
-| `TASK_RELAY_DISCORD_BOT_TOKEN` | Discord bot 認証 | Discord Developer Portal |
-| `TASK_RELAY_FORGEJO_TOKEN` | Forgejo API admin token | Forgejo 管理者 UI |
-| `TASK_RELAY_FORGEJO_WEBHOOK_SECRET` | Webhook HMAC 検証 | 32 バイト以上の乱数 |
-| MinIO access/secret key (Litestream) | 別ホスト S3 互換 backup | MinIO 管理画面 |
+| 変数                                 | 用途                    | 出所                     |
+| ------------------------------------ | ----------------------- | ------------------------ |
+| `TASK_RELAY_DISCORD_BOT_TOKEN`       | Discord bot 認証        | Discord Developer Portal |
+| `TASK_RELAY_FORGEJO_TOKEN`           | Forgejo API runtime token | Forgejo service account Settings / CLI |
+| `TASK_RELAY_FORGEJO_WEBHOOK_SECRET`  | Webhook HMAC 検証       | 32 バイト以上の乱数      |
+| MinIO access/secret key (Litestream) | 別ホスト S3 互換 backup | MinIO 管理画面           |
 
 **対象外** (secret ではない):
 - `TASK_RELAY_ADMIN_USER_IDS` / `TASK_RELAY_DISCORD_GUILD_IDS` 等の数値 ID
@@ -33,7 +33,7 @@ sudo apt install age
 
 ```bash
 # https://github.com/getsops/sops/releases から最新版
-curl -L https://github.com/getsops/sops/releases/latest/download/sops-v3.9.0.linux.amd64 -o /tmp/sops
+curl -L https://github.com/getsops/sops/releases/latest/download/sops-v3.12.2.linux.amd64 -o /tmp/sops
 sudo install -m 755 /tmp/sops /usr/local/bin/sops
 sops --version  # 3.9 以上を確認
 ```
@@ -71,7 +71,7 @@ grep "^# public key:" ~/.config/sops/age/keys.txt
 
 ## 3. `.sops.yaml` 配置
 
-repo root (`/home/akala/Documents/Glauca/task-relay/`) に作成:
+repo root (`path/to/root/task-relay/`) に作成:
 
 ```yaml
 # .sops.yaml
@@ -81,7 +81,9 @@ creation_rules:
       age1abc...xyz,  # 管理者 1 の公開鍵
       age1def...uvw   # 管理者 2 の公開鍵 (複数 admin の場合)
   - path_regex: ^task-relay/deploy/secrets/litestream\.yml$
-    age: age1abc...xyz,age1def...uvw
+    age: |
+      age1abc...xyz,  # 管理者 1 の公開鍵
+      age1def...uvw   # 管理者 2 の公開鍵 (複数 admin の場合)
 ```
 
 複数 recipient を列挙することで、どの管理者の秘密鍵でも復号可能になる。
@@ -100,7 +102,7 @@ cd task-relay
 # 平文 template を作業用に作成 (commit しない)
 cat > /tmp/task-relay.env <<'EOF'
 TASK_RELAY_DISCORD_BOT_TOKEN=<Developer Portal の token>
-TASK_RELAY_FORGEJO_TOKEN=<Forgejo admin token>
+TASK_RELAY_FORGEJO_TOKEN=<Forgejo service account token>
 TASK_RELAY_FORGEJO_WEBHOOK_SECRET=<32+ バイト乱数、例: python -c "import secrets;print(secrets.token_hex(32))">
 EOF
 
@@ -203,12 +205,12 @@ EnvironmentFile=/etc/task-relay/task-relay.env
 
 設計書 §9.5 では rotation SLA が TBD だが、暫定 SLA を以下に設定する (運用で調整):
 
-| Secret | 頻度 | トリガ |
-|---|---|---|
-| Discord bot token | 90 日 | periodic / compromise |
-| Forgejo token | 90 日 | periodic / compromise |
-| Forgejo webhook secret | 180 日 | periodic |
-| MinIO credentials | 180 日 | periodic |
+| Secret                 | 頻度   | トリガ                |
+| ---------------------- | ------ | --------------------- |
+| Discord bot token      | 90 日  | periodic / compromise |
+| Forgejo token          | 90 日  | periodic / compromise |
+| Forgejo webhook secret | 180 日 | periodic              |
+| MinIO credentials      | 180 日 | periodic              |
 
 ### 8.1 Rotation 作業フロー (Discord bot token 例)
 
@@ -302,7 +304,7 @@ Step 5: success criteria (max_lag_seconds 判定)
 
 ## 12. セキュリティ境界
 
-- 平文 secret はメモリ / `/etc/task-relay/task-relay.env` (600 perms) にのみ存在
+- 平文 secret はメモリ / `/etc/task-relay/task-relay.env` / `/etc/task-relay/litestream.yml` (いずれも 600 perms) にのみ存在
 - git には **暗号化版のみ** commit、`.gitignore` に `/tmp/*.env` や平文派生物を除外
 - `detailed-design §12.1` redact allowlist により、log/stderr/trace に secret が漏洩しないよう既に実装済
 - Discord / Forgejo webhook 通信は https 前提 (TLS は nginx reverse proxy で終端)
@@ -311,13 +313,13 @@ Step 5: success criteria (max_lag_seconds 判定)
 
 ## 13. 代替案 (採用しないが記録)
 
-| 方式 | 長所 | 短所 | 採用? |
-|---|---|---|---|
-| **sops + age** (推奨) | 設計指定、軽量、git-friendly | age キー配布が手動 | ✅ |
-| systemd-creds | 自動 decrypt、TPM2 対応 | systemd-only、設計変更要 | ❌ |
-| HashiCorp Vault | エンタープライズ機能完備 | 単一ホスト運用には重厚 | ❌ |
-| 1Password CLI | チーム共有が楽 | 外部サービス依存 | ❌ |
-| AWS Secrets Manager | マネージド | クラウド依存、課金 | ❌ |
+| 方式                  | 長所                         | 短所                     | 採用? |
+| --------------------- | ---------------------------- | ------------------------ | ----- |
+| **sops + age** (推奨) | 設計指定、軽量、git-friendly | age キー配布が手動       | ✅     |
+| systemd-creds         | 自動 decrypt、TPM2 対応      | systemd-only、設計変更要 | ❌     |
+| HashiCorp Vault       | エンタープライズ機能完備     | 単一ホスト運用には重厚   | ❌     |
+| 1Password CLI         | チーム共有が楽               | 外部サービス依存         | ❌     |
+| AWS Secrets Manager   | マネージド                   | クラウド依存、課金       | ❌     |
 
 設計書 v1.0 は **sops + age** を指定しているため本書もそれに従う。v1.1 以降で方式変更する場合は basic-design §9.3 改訂 + migration 手順策定。
 
@@ -351,16 +353,8 @@ Step 5: success criteria (max_lag_seconds 判定)
 
 ---
 
-## 実装作業の未完了項目 (TODO)
+## 実装状況メモ
 
-本マニュアルに従うためには以下の実装タスクが残っている。Codex / Claude rigorous-review の両者が blocker 判定:
-
-1. `deploy/secrets-decrypt.sh` 新設 (本書 section 5)
-2. `deploy/install.sh` に decrypt 呼び出しを追加
-3. `deploy/.gitignore` に `secrets/` の平文 + 一時ファイルを除外
-4. `docs/reference/runbook.md` に secret rotation 手順を追記
-5. `docs/reference/disaster-recovery.md` に key 喪失復旧手順を追記
-6. `basic-design §9.5 TBD` の rotation SLA を v1.1 で確定
-7. `deploy/restore-drill.sh` に secret 復号 step を追加 (optional、運用と合わせて)
-
-これらは本書と同時に Codex に発注して実装する必要がある。
+- `deploy/secrets-decrypt.sh`, `deploy/install.sh`, `deploy/restore-drill.sh` の secret 復号連携は実装済み
+- `docs/reference/runbook.md` と `docs/reference/disaster-recovery.md` の secret 運用手順は記載済み
+- 残る設計上の open item は `basic-design §9.5 TBD` の rotation SLA を v1.1 で確定すること

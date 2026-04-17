@@ -1,0 +1,18 @@
+services:
+  forgejo:
+    image: ${FORGEJO_IMAGE:?set FORGEJO_IMAGE to codeberg.org/forgejo/forgejo:<tag>}
+    container_name: forgejo
+    restart: unless-stopped
+    environment:
+      USER_UID: ${FORGEJO_UID:-1000}
+      USER_GID: ${FORGEJO_GID:-1000}
+      FORGEJO__server__ROOT_URL: ${FORGEJO_ROOT_URL:?set FORGEJO_ROOT_URL}
+    volumes:
+      - forgejo-data:/data
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "${FORGEJO_HTTP_PORT:-3000}:3000"
+      - "${FORGEJO_SSH_PORT:-222}:22"
+
+volumes:
+  forgejo-data:

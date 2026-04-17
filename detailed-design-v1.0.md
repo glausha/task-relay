@@ -965,16 +965,17 @@ if limit > 0 and remaining < limit * 0.2:
 
 ```
 1. redis.service
-2. forgejo.service
-3. task-relay-db-check.service
-4. task-relay-journal-replay.service
-5. task-relay-journal-ingester.service
-6. task-relay-reconcile.service
-7. task-relay-router.service
-8. task-relay-discord-bot.service
-9. task-relay-projection.service
-10. task-relay-retention.service
+2. task-relay-db-check.service
+3. task-relay-journal-replay.service
+4. task-relay-journal-ingester.service
+5. task-relay-reconcile.service
+6. task-relay-router.service
+7. task-relay-discord-bot.service
+8. task-relay-projection.service
+9. task-relay-retention.service
 ```
+
+Forgejo は `TASK_RELAY_FORGEJO_BASE_URL` で到達できればよく、local systemd unit を前提にしない。新規作成時は Docker Compose など別導線で先に起動しておく。
 
 `task-relay-journal-replay.service` は起動時 replay 専用、`task-relay-journal-ingester.service` は継続 ingest 専用とする。
 ingester 再開位置は `journal_ingester_state(last_file, last_offset)` を一次情報とする。

@@ -8,17 +8,18 @@
 `detailed-design` §11.1 の標準起動順:
 
 1. `redis.service`
-2. `forgejo.service`
-3. `task-relay-db-check.service`
-4. `task-relay-journal-replay.service`
-5. `task-relay-journal-ingester.service`
-6. `task-relay-reconcile.service`
-7. `task-relay-router.service`
-8. `task-relay-discord-bot.service`
-9. `task-relay-projection.service`
-10. `task-relay-retention.service`
+2. `task-relay-db-check.service`
+3. `task-relay-journal-replay.service`
+4. `task-relay-journal-ingester.service`
+5. `task-relay-reconcile.service`
+6. `task-relay-router.service`
+7. `task-relay-discord-bot.service`
+8. `task-relay-projection.service`
+9. `task-relay-retention.service`
 
 補足:
+- Forgejo は `TASK_RELAY_FORGEJO_BASE_URL` で到達できればよく、`task-relay.target` はローカル `forgejo.service` を pull しない。
+- 新規に Forgejo を立てる場合は `docker compose --env-file /etc/task-relay/forgejo-compose.env -f deploy/forgejo-compose.yml up -d` を先に実行する。
 - `task-relay-journal-replay.service` は起動時 replay 専用です。
 - `task-relay-journal-ingester.service` は継続 ingest 専用です。
 - `task-relay-reconcile.service` は state を直接書き換えず、`internal.reconcile_resume` を journal に append します。
@@ -42,6 +43,7 @@ sudo bash deploy/install.sh
 起動:
 
 ```bash
+docker compose --env-file /etc/task-relay/forgejo-compose.env -f deploy/forgejo-compose.yml up -d  # 新規 Forgejo の場合のみ
 sudo systemctl start task-relay.target
 sudo systemctl status task-relay.target
 ```

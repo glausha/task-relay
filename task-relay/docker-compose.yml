@@ -13,8 +13,8 @@ services:
     image: litestream/litestream:latest
     command: ["replicate"]
     volumes:
-      - ./var/task-relay:/var/task-relay:ro
-      # - ./litestream.yml:/etc/litestream.yml:ro
+      - ./var/lib/task-relay:/var/lib/task-relay:ro
+      - ./deploy/litestream.yml.example:/etc/litestream.yml:ro
     restart: unless-stopped
 
 volumes:

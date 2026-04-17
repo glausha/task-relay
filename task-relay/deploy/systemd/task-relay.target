@@ -1,8 +1,7 @@
 [Unit]
 Description=task-relay service group
-After=redis.service forgejo.service task-relay-db-check.service task-relay-journal-replay.service task-relay-journal-ingester.service task-relay-reconcile.service task-relay-router.service task-relay-discord-bot.service task-relay-forgejo-webhook.service task-relay-projection.service task-relay-retention.timer
-Wants=redis.service forgejo.service task-relay-db-check.service task-relay-journal-replay.service task-relay-journal-ingester.service task-relay-reconcile.service task-relay-router.service task-relay-discord-bot.service task-relay-forgejo-webhook.service task-relay-projection.service task-relay-retention.timer
+After=redis.service task-relay-db-check.service task-relay-journal-replay.service task-relay-journal-ingester.service task-relay-reconcile.service task-relay-router.service task-relay-discord-bot.service task-relay-forgejo-webhook.service task-relay-projection.service task-relay-retention.timer
+Wants=redis.service task-relay-db-check.service task-relay-journal-replay.service task-relay-journal-ingester.service task-relay-reconcile.service task-relay-router.service task-relay-discord-bot.service task-relay-forgejo-webhook.service task-relay-projection.service task-relay-retention.timer
 
 [Install]
 WantedBy=multi-user.target
-

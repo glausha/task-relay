@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TASK_RELAY_",
         extra="ignore",
-        env_file=".env",
     )
 
     sqlite_path: Path = Path("var/task-relay/state.sqlite")

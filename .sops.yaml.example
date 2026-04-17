@@ -16,7 +16,4 @@ creation_rules:
   - path_regex: ^task-relay/deploy/secrets/litestream\.yml$
     age: |
       age1abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqr
-  # 複数管理者の場合は age: に複数の公開鍵をコンマ区切りで列挙:
-  # age: |
-  #   age1first...xyz,
-  #   age1second...uvw
+

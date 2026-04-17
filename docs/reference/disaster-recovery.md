@@ -115,7 +115,7 @@ restore drill 頻度:
 全管理者が age 秘密鍵を失うと `deploy/secrets/*.env` / `*.yml` は復号不能になる。全 secret を **再発行** する。
 
 1. Discord Developer Portal で `TASK_RELAY_DISCORD_BOT_TOKEN` を Reset Token
-2. Forgejo admin UI で `TASK_RELAY_FORGEJO_TOKEN` と webhook secret を新規発行
+2. Forgejo service account Settings または admin CLI で `TASK_RELAY_FORGEJO_TOKEN` を新規発行し、webhook secret も新値に更新
 3. MinIO 管理画面で Litestream access/secret key を新規発行
 4. 新 age キーペアを生成 (`docs/guides/secret-management.md §2` 参照)
 5. `.sops.yaml` を新 age 公開鍵のみで再構成
